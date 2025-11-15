@@ -1,0 +1,5789 @@
+ChatGPT
+
+----------------------- Q ----------------------
+need to replace my air handler controller with a kincony kc868-a6. need esphome config to load. air handler has 4 speed blower, hydronic pump and inputs for a standard thermostat with heat/cool and 2nd stage cooling. it also has control for electronic air filter and humidifier control.
+
+----------------------- A ----------------------
+Thought for 57sHere’s a ready-to-flash ESPHome config for the KC868-A6 set up as an air-handler controller with:
+
+
+4 blower speeds
+
+
+Hydronic pump
+
+
+Electronic air cleaner (EAC)
+
+
+Humidifier (shares the last relay – details below)
+
+
+Inputs from a standard thermostat: G, Y1, Y2, W
+
+
+
+⚠️ Hardware note: KC868-A6 only has 6 relays. You listed 7 loads (4 fan speeds + pump + EAC + humidifier).
+In this config:
+
+
+4 relays = blower speeds
+
+
+1 relay = hydronic pump
+
+
+1 relay = shared EAC/Humidifier output (energized on heat/cool calls; you can split it externally with interlocks if you need truly separate circuits).
+If you really need fully independent outputs for EAC + humidifier, you’ll need an extra relay board or to move to an A8/A16.
+
+
+
+The relay & input mapping matches the standard A6 ESPHome template using PCF8574 at 0x22 (inputs) and 0x24 (outputs). ESPHome Devices+1
+
+Wiring plan (high-level)
+Thermostat to KC868-A6 inputs (dry contacts, 24VAC):
+
+
+IN1 → G (fan)
+
+
+IN2 → Y1 (cool stage 1)
+
+
+IN3 → Y2 (cool stage 2)
+
+
+IN4 → W (heat)
+
+
+IN5/IN6 → spare / safety / float switch as you like
+
+
+Thermostat R goes to the A6’s input COM / 24V reference as appropriate so that calling a function closes a dry contact across each input.
+
+
+Relays:
+
+
+RELAY1 → Blower Low
+
+
+RELAY2 → Blower Med-Low
+
+
+RELAY3 → Blower Med-High
+
+
+RELAY4 → Blower High
+
+
+RELAY5 → Hydronic pump enable
+
+
+RELAY6 → EAC/Humidifier (shared “accessory” output – active whenever there’s a call that runs the blower)
+
+
+Only one blower speed relay is allowed on at a time; the logic enforces that.
+
+ESPHome YAML
+Paste this into a new ESPHome node and tweak the name, Wi-Fi, and secrets to your environment:
+
+esphome:
+  name: kc868-a6-airhandler
+  friendly_name: "KC868 A6 Air Handler"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# --- Basic services ---
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "kc868-a6-fallback"
+    password: "changeme123"
+
+logger:
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+captive_portal:
+
+# --- I2C + IO expanders (KC868-A6 standard) ---
+i2c:
+  sda: GPIO4
+  scl: GPIO15
+  scan: true
+  id: bus_a
+
+pcf8574:
+  - id: inputs
+    address: 0x22
+  - id: outputs
+    address: 0x24
+
+# --- (Optional) RS485 / RS232 if you ever need them ---
+# uart:
+#   - id: rs485
+#     tx_pin: GPIO27
+#     rx_pin: GPIO14
+#     baud_rate: 9600
+#   - id: rs232
+#     tx_pin: GPIO17
+#     rx_pin: GPIO16
+#     baud_rate: 9600
+
+# ============================================================
+#  THERMOSTAT INPUTS (G, Y1, Y2, W)
+#  These are 24V "calls" from a conventional thermostat.
+# ============================================================
+
+binary_sensor:
+  # G - Fan call
+  - platform: gpio
+    name: "Tstat G (Fan Call)"
+    id: tstat_g
+    pin:
+      pcf8574: inputs
+      number: 0
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y1 - Cool stage 1
+  - platform: gpio
+    name: "Tstat Y1 (Cool Stage 1)"
+    id: tstat_y1
+    pin:
+      pcf8574: inputs
+      number: 1
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y2 - Cool stage 2
+  - platform: gpio
+    name: "Tstat Y2 (Cool Stage 2)"
+    id: tstat_y2
+    pin:
+      pcf8574: inputs
+      number: 2
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # W - Heat call (hydronic)
+  - platform: gpio
+    name: "Tstat W (Heat)"
+    id: tstat_w
+    pin:
+      pcf8574: inputs
+      number: 3
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Optional spare inputs
+  - platform: gpio
+    name: "Spare IN5"
+    id: spare_in5
+    pin:
+      pcf8574: inputs
+      number: 4
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN6"
+    id: spare_in6
+    pin:
+      pcf8574: inputs
+      number: 5
+      mode: INPUT
+      inverted: true
+
+# ============================================================
+#  RELAY OUTPUTS
+# ============================================================
+
+switch:
+  # Blower speeds
+  - platform: gpio
+    name: "Blower Speed Low"
+    id: blower_low
+    pin:
+      pcf8574: outputs
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-Low"
+    id: blower_medlow
+    pin:
+      pcf8574: outputs
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-High"
+    id: blower_medhigh
+    pin:
+      pcf8574: outputs
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed High"
+    id: blower_high
+    pin:
+      pcf8574: outputs
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: outputs
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Shared EAC + Humidifier relay (accessory output)
+  - platform: gpio
+    name: "EAC / Humidifier Relay"
+    id: eac_humidifier
+    pin:
+      pcf8574: outputs
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ============================================================
+#  USER SETTINGS (for tuning behavior)
+# ============================================================
+
+number:
+  # You can tweak blower speed behavior without touching the script
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+# Optional: enable/disable EAC/Humidifier operation
+  - platform: template
+    name: "Enable EAC/Humidifier on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC/Humidifier on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC/Humidifier on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+# ============================================================
+#  LOGIC: choose blower speed + pump + accessory relay
+# ============================================================
+
+script:
+  - id: update_hvac
+    then:
+      - lambda: |-
+          const bool call_g  = id(tstat_g).state;
+          const bool call_y1 = id(tstat_y1).state;
+          const bool call_y2 = id(tstat_y2).state;
+          const bool call_w  = id(tstat_w).state;
+
+          // Turn everything off first (so only one speed ends up on)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+          id(hydronic_pump).turn_off();
+
+          // Decide blower mode:
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Fan-only
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          if (call_w) {
+            speed = (int) id(heat_speed).state;
+            id(hydronic_pump).turn_on();
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+          } else if (call_g) {
+            // Fan only: use the same as cool stage 1 by default
+            speed = (int) id(cool_stage1_speed).state;
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              // no blower
+              break;
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // Accessory (EAC/Humidifier) behavior:
+          bool accessory_should_run = false;
+
+          if (call_w && ((int)id(enable_eac_on_heat).state == 1)) {
+            accessory_should_run = true;
+          }
+          if ((call_y1 || call_y2) && ((int)id(enable_eac_on_cool).state == 1)) {
+            accessory_should_run = true;
+          }
+          if (call_g && !call_w && !call_y1 && !call_y2 &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            accessory_should_run = true;
+          }
+
+          if (blower_on && accessory_should_run) {
+            id(eac_humidifier).turn_on();
+          } else {
+            id(eac_humidifier).turn_off();
+          }
+
+# Optional: show current mode/status as text sensors
+text_sensor:
+  - platform: template
+    name: "Air Handler Mode"
+    id: air_handler_mode
+    lambda: |-
+      if (id(tstat_w).state) {
+        return {"HEAT"};
+      } else if (id(tstat_y2).state) {
+        return {"COOL_STAGE_2"};
+      } else if (id(tstat_y1).state) {
+        return {"COOL_STAGE_1"};
+      } else if (id(tstat_g).state) {
+        return {"FAN_ONLY"};
+      } else {
+        return {"IDLE"};
+      }
+
+  - platform: template
+    name: "Blower Speed Selected"
+    id: blower_speed_label
+    lambda: |-
+      if (id(blower_low).state)        return {"LOW"};
+      if (id(blower_medlow).state)     return {"MED_LOW"};
+      if (id(blower_medhigh).state)    return {"MED_HIGH"};
+      if (id(blower_high).state)       return {"HIGH"};
+      return {"OFF"};
+
+
+How this behaves (summary)
+
+
+Heat (W call)
+
+
+Hydronic pump relay turns on
+
+
+Blower runs at Heat Blower Speed (default “Med-Low”)
+
+
+EAC/humidifier relay turns on if “Enable EAC/Humidifier on Heat” is set to 1
+
+
+
+
+Cool, stage 1 (Y1 only)
+
+
+Blower runs at Cool Stage 1 Blower Speed (default “Med-Low”)
+
+
+EAC/humidifier relay turns on if “Enable EAC/Humidifier on Cool” is 1
+
+
+
+
+Cool, stage 2 (Y2)
+
+
+Blower runs at Cool Stage 2 Blower Speed (default “High”)
+
+
+EAC/humidifier relay on as above
+
+
+
+
+Fan only (G without W/Y1/Y2)
+
+
+Blower runs (default same speed as Cool Stage 1)
+
+
+EAC/humidifier can optionally run if “Enable EAC/Humidifier on Fan Only” is 1
+
+
+
+
+Only one blower speed relay is ever active at once.
+
+
+
+If you tell me:
+
+
+Which existing terminals on the air handler go where (labels on the OEM board), and
+
+
+Whether you truly need separate humidifier vs EAC relays,
+
+
+I can tweak this YAML to exactly mirror your factory controller logic (including any blower delay on heat/cool, purge times, etc.).
+Sources
+
+----------------------- Q ----------------------
+need to add 30sec off delay for heating and the pump needs to have a water cycle program that runs one a day at 3am unless the heat has ran atleast once in a 24hr time period.
+
+----------------------- A ----------------------
+Thought for 1m 12sNice, that’s a fun upgrade 🙂 Let’s bolt on:
+
+
+A 30-second off delay for heat (blower + pump keep running after W drops), and
+
+
+A daily 3:00 AM pump exercise that only runs if heat has not run at least once in the last 24 hours.
+
+
+Below is a full updated YAML based on the config I gave you earlier, with the new logic wired in.
+Key changes (so you know what I did):
+
+
+Added time: via SNTP (America/Chicago).
+
+
+Added globals:
+
+
+last_heat_timestamp: when heat last ran.
+
+
+extend_heat: whether we’re in the 30s “heat off delay” window.
+
+
+
+
+Modified the W input:
+
+
+on_press → immediate heat, cancel any previous delay.
+
+
+on_release → start a heat_off_delay script (30s).
+
+
+
+
+Updated update_hvac script to:
+
+
+Treat W as “still active” during the 30s delay (extend_heat), unless cooling is called.
+
+
+Update last_heat_timestamp whenever W is actually called.
+
+
+
+
+Added daily 3:00 AM on_time trigger to run pump_exercise_if_needed:
+
+
+Checks if now - last_heat_timestamp >= 24h.
+
+
+If yes and W isn’t currently active, runs the pump for 3 minutes (easy to change).
+
+
+
+
+You can just paste this in over the old version and adjust names/secrets as needed.
+
+Updated ESPHome YAML for KC868-A6 Air Handler
+
+esphome:
+  name: kc868-a6-airhandler
+  friendly_name: "KC868 A6 Air Handler"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# --- Time (for daily pump exercise and 24h tracking) ---
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Chicago"
+    on_time:
+      # Every day at 03:00
+      - seconds: 0
+        minutes: 0
+        hours: 3
+        then:
+          - script.execute: pump_exercise_if_needed
+
+# --- Globals (for heat delay + last heat run tracking) ---
+globals:
+  # Unix timestamp of last time HEAT (W) was actually called
+  - id: last_heat_timestamp
+    type: long
+    restore_value: yes
+    initial_value: '0'
+
+  # True while we are in the 30s "heat off delay" window
+  - id: extend_heat
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "kc868-a6-fallback"
+    password: "changeme123"
+
+logger:
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+captive_portal:
+
+# --- I2C + IO expanders (KC868-A6 standard) ---
+i2c:
+  sda: GPIO4
+  scl: GPIO15
+  scan: true
+  id: bus_a
+
+pcf8574:
+  - id: inputs
+    address: 0x22
+  - id: outputs
+    address: 0x24
+
+# ============================================================
+#  THERMOSTAT INPUTS (G, Y1, Y2, W)
+# ============================================================
+
+binary_sensor:
+  # G - Fan call
+  - platform: gpio
+    name: "Tstat G (Fan Call)"
+    id: tstat_g
+    pin:
+      pcf8574: inputs
+      number: 0
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y1 - Cool stage 1
+  - platform: gpio
+    name: "Tstat Y1 (Cool Stage 1)"
+    id: tstat_y1
+    pin:
+      pcf8574: inputs
+      number: 1
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y2 - Cool stage 2
+  - platform: gpio
+    name: "Tstat Y2 (Cool Stage 2)"
+    id: tstat_y2
+    pin:
+      pcf8574: inputs
+      number: 2
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # W - Heat call (hydronic) with 30s OFF delay
+  - platform: gpio
+    name: "Tstat W (Heat)"
+    id: tstat_w
+    pin:
+      pcf8574: inputs
+      number: 3
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        # Heat call started: cancel any pending off delay and update immediately
+        - lambda: |-
+            id(extend_heat) = false;
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Start 30s "heat off delay"
+        - script.execute: heat_off_delay
+
+  # Optional spare inputs
+  - platform: gpio
+    name: "Spare IN5"
+    id: spare_in5
+    pin:
+      pcf8574: inputs
+      number: 4
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN6"
+    id: spare_in6
+    pin:
+      pcf8574: inputs
+      number: 5
+      mode: INPUT
+      inverted: true
+
+# ============================================================
+#  RELAY OUTPUTS
+# ============================================================
+
+switch:
+  # Blower speeds
+  - platform: gpio
+    name: "Blower Speed Low"
+    id: blower_low
+    pin:
+      pcf8574: outputs
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-Low"
+    id: blower_medlow
+    pin:
+      pcf8574: outputs
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-High"
+    id: blower_medhigh
+    pin:
+      pcf8574: outputs
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed High"
+    id: blower_high
+    pin:
+      pcf8574: outputs
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: outputs
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Shared EAC + Humidifier relay (accessory output)
+  - platform: gpio
+    name: "EAC / Humidifier Relay"
+    id: eac_humidifier
+    pin:
+      pcf8574: outputs
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ============================================================
+#  USER SETTINGS (for tuning behavior)
+# ============================================================
+
+number:
+  # Blower speed mapping
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+  # EAC/Humidifier enable flags (0/1)
+  - platform: template
+    name: "Enable EAC/Humidifier on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC/Humidifier on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC/Humidifier on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+# ============================================================
+#  SCRIPTS: HVAC logic + heat delay + pump exercise
+# ============================================================
+
+script:
+  # Main control logic (fan speeds, pump, accessory)
+  - id: update_hvac
+    then:
+      - lambda: |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1     = id(tstat_y1).state;
+          const bool call_y2     = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend      = id(extend_heat);
+
+          bool call_g = call_g_raw;
+          bool call_w_effective = call_w_raw;
+
+          // Heat can be "extended" for 30s after W call ends,
+          // but if cooling is called, cooling wins.
+          if (!call_w_raw && extend && !call_y1 && !call_y2) {
+            call_w_effective = true;
+          }
+
+          // If W is truly ON and time is valid, update last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+
+          // Turn everything off first (so only one speed ends up on)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+          id(hydronic_pump).turn_off();
+
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Fan-only
+          if (call_w_effective) {
+            speed = (int) id(heat_speed).state;
+            id(hydronic_pump).turn_on();
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+          } else if (call_g) {
+            // Fan only: use the same as cool stage 1 by default
+            speed = (int) id(cool_stage1_speed).state;
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              // no blower
+              break;
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // Accessory (EAC/Humidifier) behavior:
+          bool accessory_should_run = false;
+
+          if (call_w_effective && ((int)id(enable_eac_on_heat).state == 1)) {
+            accessory_should_run = true;
+          }
+          if ((call_y1 || call_y2) && ((int)id(enable_eac_on_cool).state == 1)) {
+            accessory_should_run = true;
+          }
+          if (call_g && !call_w_effective && !call_y1 && !call_y2 &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            accessory_should_run = true;
+          }
+
+          if (blower_on && accessory_should_run) {
+            id(eac_humidifier).turn_on();
+          } else {
+            id(eac_humidifier).turn_off();
+          }
+
+  # 30s off-delay for heating (extends call_w_effective)
+  - id: heat_off_delay
+    mode: restart
+    then:
+      - lambda: |-
+          id(extend_heat) = true;
+      - delay: 30s
+      - lambda: |-
+          id(extend_heat) = false;
+      - script.execute: update_hvac
+
+  # Check if pump exercise is needed at 3am
+  - id: pump_exercise_if_needed
+    then:
+      - lambda: |-
+          if (!id(sntp_time).now().is_valid()) {
+            ESP_LOGW("pump_exercise", "Time not valid; skipping daily pump exercise");
+            return;
+          }
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts = id(last_heat_timestamp);
+          const long diff = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+
+          if (id(tstat_w).state) {
+            ESP_LOGI("pump_exercise", "Heat currently on; skipping pump exercise");
+            return;
+          }
+
+          if (diff >= 24L * 60L * 60L) {
+            ESP_LOGI("pump_exercise", "No heat in last 24h, running pump exercise");
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          } else {
+            ESP_LOGI("pump_exercise", "Heat has run in last 24h, skipping exercise");
+          }
+
+  # Actually run the pump exercise (default 3 minutes)
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 3min     # <--- change this if you want a different exercise duration
+      - if:
+          condition:
+            binary_sensor.is_on: tstat_w
+          then:
+            - logger.log: "Pump exercise finished but heat is now ON; handing back to HVAC logic"
+            - script.execute: update_hvac
+          else:
+            - logger.log: "Pump exercise finished, turning pump off"
+            - switch.turn_off: hydronic_pump
+
+# ============================================================
+#  STATUS TEXT SENSORS
+# ============================================================
+
+text_sensor:
+  - platform: template
+    name: "Air Handler Mode"
+    id: air_handler_mode
+    lambda: |-
+      if (id(tstat_w).state || id(extend_heat)) {
+        return {"HEAT"};
+      } else if (id(tstat_y2).state) {
+        return {"COOL_STAGE_2"};
+      } else if (id(tstat_y1).state) {
+        return {"COOL_STAGE_1"};
+      } else if (id(tstat_g).state) {
+        return {"FAN_ONLY"};
+      } else {
+        return {"IDLE"};
+      }
+
+  - platform: template
+    name: "Blower Speed Selected"
+    id: blower_speed_label
+    lambda: |-
+      if (id(blower_low).state)        return {"LOW"};
+      if (id(blower_medlow).state)     return {"MED_LOW"};
+      if (id(blower_medhigh).state)    return {"MED_HIGH"};
+      if (id(blower_high).state)       return {"HIGH"};
+      return {"OFF"};
+
+
+How it now behaves
+
+
+Heat call (W ON)
+
+
+Immediately sets mode to HEAT, pump ON, blower at Heat Blower Speed.
+
+
+Updates last_heat_timestamp.
+
+
+
+
+When W turns OFF
+
+
+extend_heat = true for 30s → system still treats it as HEAT.
+
+
+After 30s: extend_heat = false, update_hvac runs and may shut blower & pump down (or switch to whatever other calls are active).
+
+
+
+
+Daily at 3:00 AM
+
+
+If no heat in last 24h and W is currently OFF → run pump for 3 minutes, then:
+
+
+If W turned ON during that time → hand control back to update_hvac (don’t force pump OFF).
+
+
+Otherwise → pump OFF.
+
+
+
+
+
+
+If you want to tweak anything (e.g., make the pump exercise 1 minute instead of 3, or change the delay time) I can adjust the YAML for that.
+
+
+----------------------- Q ----------------------
+Rheem_92-24161-94-05_RHWB.pdfPDFthis is the manual for the air handler. review for esphome config acuracy.
+
+----------------------- A ----------------------
+Thought for 1m 6sShort answer: your ESPHome logic is mostly aligned with what the Rheem RHWB is doing, but there are a few important differences/adjustments I’d make now that we’ve got the manual in front of us. I’ll walk through them and point out exactly what’s “correct as-is” vs what’s different from factory behavior, and where I’d tweak the YAML.
+
+1. Thermostat terminals & basic I/O mapping
+From the manual, the low-voltage side is: R, C, G, Y1, Y2, W, B, plus the FS (flow sensor) connection into the PCB. Rheem_92-24161-94-05_RHWB
+Your intended mapping:
+
+
+Inputs from thermostat:
+
+
+IN1 → G (fan)
+
+
+IN2 → Y1 (cool stage 1)
+
+
+IN3 → Y2 (cool stage 2)
+
+
+IN4 → W (heat)
+
+
+(IN5/IN6 spare)
+
+
+
+
+That matches the board’s thermostat terminals and the single-stage A/C / heat pump diagrams. Rheem_92-24161-94-05_RHWB
+So: Terminal mapping is correct.
+One caveat (hardware, not YAML): the KC868-A6 inputs are not directly 24 VAC thermostat inputs like the original board. You’ll either:
+
+
+Treat thermostat contacts as dry closures into the KC868, or
+
+
+Use small interface relays / optos to isolate 24 VAC from the A6 GPIO side.
+
+
+That’s wiring, not config, but it matters.
+
+2. Blower speeds vs factory behavior
+The factory board has 4 PSC motor taps and separate terminals for:
+
+
+FAN PARK
+
+
+FAN HEATING
+
+
+FAN COOLING Rheem_92-24161-94-05_RHWB
+
+
+So out of the box it uses different taps for heat vs cool, and the DIP switches + airflow tables decide which tap = which speed for each mode.
+In ESPHome we did:
+
+
+4 relays = 4 speeds (Low, Med-Low, Med-High, High)
+
+
+Template numbers cool_stage1_speed, cool_stage2_speed, heat_speed to pick which relay to fire.
+
+
+Functionally that’s fine and actually more flexible than the OEM board, as long as:
+
+
+Only one fan-speed relay is ever on (we enforce that in update_hvac).
+
+
+You wire each relay to a different motor tap as planned.
+
+
+So here you’re good. Behavior is “factory-equivalent but more configurable.”
+
+3. Pump control & flow sensor (FS)
+The big difference: the factory board actively watches the flow sensor and has a retry routine if there’s no flow:
+
+
+On a call for heat (R–W closed) it:
+
+
+Checks FS; if FS is present → runs pump + fan.
+
+
+If FS is not present:
+
+
+Runs pump for 60 s to try to create flow,
+
+
+Waits 60 s,
+
+
+Retries until FS becomes active, with a status LED flashing. Rheem_92-24161-94-05_RHWB
+
+
+
+
+
+
+Our ESPHome config:
+
+
+Turns the pump on immediately on heat call.
+
+
+Does not monitor FS at all.
+
+
+Adds the 30 s off-delay and a daily exercise.
+
+
+That means:
+
+
+For a closed-loop boiler system, you’re totally fine; you probably don’t even have a FS.
+
+
+For an open-loop tankless system (direct off domestic water, as in the Rheem “tankless + air handler” diagrams), you’re losing the FS safety / retry logic the OEM controller provides.
+
+
+If you are indeed running open-loop with the packaged flow switch, I’d recommend:
+
+
+Bringing FS into one of the spare inputs (IN5/IN6) and
+
+
+Mirroring the “60 s run → 60 s wait → retry” logic from the manual.
+
+
+If you’re running a sealed hydronic loop off a boiler, the current ESPHome pump logic is acceptable and simpler.
+
+4. Blower off-delay vs the manual
+The manual clearly shows:
+
+
+A 30 s cooling off delay – when Y ends, COOL_HI runs for 30 s then shuts off. Rheem_92-24161-94-05_RHWB
+
+
+SW1 is explicitly labeled as the “heating blow off delay” DIP bank. Rheem_92-24161-94-05_RHWB
+
+
+We currently:
+
+
+Implement a 30 s off delay on HEAT (W dropping) only, because that’s what you asked for.
+
+
+Do no off-delay on cooling.
+
+
+So:
+
+
+Relative to your stated requirement → correct (30 s heat delay is implemented).
+
+
+Relative to factory → we’re not reproducing the 30 s cooling delay, and our heat delay is fixed at 30 s instead of being DIP-selectable.
+
+
+If you’d like to be closer to OEM behavior, we can:
+
+
+Add a second script for cool-off delay (triggered on Y1/Y2 release), or
+
+
+Flip things so 30 s is on cool only, or
+
+
+Make both delays adjustable via number: entities.
+
+
+Right now, there’s no safety problem; it’s just a behavioral difference.
+
+5. Daily pump exercise duration
+The manual states:
+
+“The hydronic air handler has a … cycle which will circulate the water in the coil for 6 minutes per day to prevent water stagnation.” Rheem_92-24161-94-05_RHWB
+
+We set the pump_exercise_run script to 3 minutes.
+Since you’re replacing the Rheem control board, you’ll lose the factory 6-minute routine unless we replicate it. To match the manual, just change:
+
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 3min
+
+to:
+yamlCopy code  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 6min
+
+Everything else about that routine (only if no heat in 24h, skip if W currently on, etc.) is conceptually aligned with what Rheem is trying to accomplish: keep water moving occasionally so it doesn’t stagnate.
+
+6. EAC and humidifier control
+Manual behavior:
+
+
+Electronic Air Cleaner (EAC):
+Line voltage hot on the terminal “EAC” + neutral from the same board, energized whenever the circulating blower is running. Rheem_92-24161-94-05_RHWB
+
+
+Humidifier:
+Separate dry contacts on the board, usable with either 24 VAC or 115 VAC, likely only with heat calls. Rheem_92-24161-94-05_RHWB
+
+
+Our config on KC868-A6:
+
+
+We have one shared relay eac_humidifier, energized when:
+
+
+Blower is on and:
+
+
+Heat call and Enable EAC/Humidifier on Heat == 1, or
+
+
+Cool call and Enable EAC/Humidifier on Cool == 1, or
+
+
+Fan-only and Enable EAC/Humidifier on Fan == 1.
+
+
+
+
+
+
+This is:
+
+
+Close enough for EAC (factory does “any time blower is on”; our default flags for heat & cool are 1, so we match that).
+
+
+Not identical for humidifier (we don’t have a dedicated separate relay and you may want heat-only control).
+
+
+Given the A6 only has 6 relays, sharing EAC/Humidifier on one output is a reasonable compromise, as long as you handle the line-voltage side appropriately (e.g., an external relay panel that splits the low-voltage “accessory” signal into separate EAC and humidifier power paths with the interlocks you want).
+If you later move to an A8/A16 or tack on a small extra relay board, we can easily split them in YAML.
+
+7. Summary of “accuracy vs manual”
+Matches / compatible with manual:
+
+
+Thermostat signal set: R, C, G, Y1, Y2, W are all represented in ESPHome. Rheem_92-24161-94-05_RHWB
+
+
+4 blower speeds + a dedicated hydronic pump output are implemented.
+
+
+EAC-type accessory output is present and default behavior (on whenever blower + mode-enabled) is compatible with how the EAC terminal is intended to be used.
+
+
+There is a heat off-delay feature, which the OEM board supports via SW1.
+
+
+Differs from OEM logic:
+
+
+Pump & flow sensor – no FS-based safety/retry logic yet; OEM relies on it for open-loop systems. Rheem_92-24161-94-05_RHWB
+
+
+Off-delays – we delay heat only (per your request), but Rheem documents a 30 s delay on cooling and has more detailed heating blower delay options via DIP. Rheem_92-24161-94-05_RHWB
+
+
+Pump exercise – we run 3 min once/day at 3 AM; Rheem specifies 6 min/day. Rheem_92-24161-94-05_RHWB
+
+
+Humidifier – OEM has a separate dry contact; we’re sharing the relay with EAC due to relay count limits.
+
+
+If you tell me:
+
+
+Whether you’re open-loop with a tankless (using the supplied flow switch) or a closed hydronic loop, and
+
+
+Whether you want to clone the factory cool-off 30 s behavior as well,
+
+
+I can send a next-rev YAML that:
+
+
+Adds optional FS logic like the OEM,
+
+
+Changes pump exercise to 6 min, and
+
+
+Implements cooling off delay in addition to the heating off delay you already asked for.
+
+
+Sources
+
+----------------------- Q ----------------------
+1. switching to kc868-a8s
+2. ok
+3. running open loop. the factory sensory is plastic and leaks due to expansion. add option to use or not use.
+4. add options that replicate the dip switch options.
+5. This is the main reason for replacement. It runs the pump multiple times a day and interferes with showers and other times that hot water is needed.
+6. moved to A8S so not a problem.
+
+
+----------------------- A ----------------------
+Thought for 4m 13sNice, moving to the A8S makes this a lot more comfortable – we’ve got enough relays to give the EAC and humidifier their own outputs now. ✅
+Below is a complete new ESPHome config for the KC868-A8S that:
+
+
+Uses the correct PCF8574 I/O mapping for the A8/A8S (outputs @ 0x24, inputs @ 0x22). ESPHome Devices+1
+
+
+Adds DIP-switch-style options:
+
+
+AC configuration: Single-Stage A/C vs Two-Stage A/C (controls whether Y2 is honored).
+
+
+Blower off-delay selectable: 0 / 30 / 60 / 90 / 120 seconds (like SW1 in the manual). Rheem_92-24161-94-05_RHWB
+
+
+
+
+Keeps your requested heat off-delay (uses the DIP-like off-delay time instead of hard-coded 30 s).
+
+
+Adds an optional flow-switch (FS) input:
+
+
+When enabled, blower only runs on heat once FS is made, pump still runs to try to establish flow (simpler version of the OEM logic). Rheem_92-24161-94-05_RHWB
+
+
+When disabled, FS is ignored (good for now with the leaky plastic sensor).
+
+
+
+
+Implements a single daily pump exercise at 3:00 AM, only if no heat in the last 24 hours, and with an enable/disable option:
+
+
+Duration defaults to 6 minutes to match the idea from the manual, but without the “multiple times per day” behavior you hate. Rheem_92-24161-94-05_RHWB
+
+
+
+
+Splits EAC and humidifier onto separate relays (thanks to the A8S’s 8 outputs).
+
+
+
+I/O mapping (A8S)
+Inputs (PCF8574 @ 0x22):
+
+
+IN1 (0) → Thermostat G (fan)
+
+
+IN2 (1) → Thermostat Y1 (cool stage 1)
+
+
+IN3 (2) → Thermostat Y2 (cool stage 2)
+
+
+IN4 (3) → Thermostat W (hydronic heat)
+
+
+IN5 (4) → FS (flow switch) – optional
+
+
+IN6–IN8 (5–7) → spare (float switch, door switch, etc.)
+
+
+Outputs (PCF8574 @ 0x24):
+
+
+OUT1 (0) → Blower Low
+
+
+OUT2 (1) → Blower Med-Low
+
+
+OUT3 (2) → Blower Med-High
+
+
+OUT4 (3) → Blower High
+
+
+OUT5 (4) → Hydronic pump
+
+
+OUT6 (5) → EAC (electronic air cleaner)
+
+
+OUT7 (6) → Humidifier
+
+
+OUT8 (7) → Spare / future
+
+
+
+Full ESPHome YAML for KC868-A8S + Rheem RHWB
+Paste this in as a new node, tweak name, Wi-Fi, and secrets.
+
+esphome:
+  name: kc868-a8s-airhandler
+  friendly_name: "KC868 A8S Air Handler"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# --- Time (for 3am pump exercise + 24h tracking) ---
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Chicago"
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 3
+        then:
+          - script.execute: pump_exercise_if_needed
+
+# --- Globals ---
+globals:
+  # Unix timestamp of last time HEAT (W) was actually called
+  - id: last_heat_timestamp
+    type: long
+    restore_value: yes
+    initial_value: '0'
+
+  # True while we are in the "heat off delay" window
+  - id: extend_heat
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "kc868-a8s-fallback"
+    password: "changeme123"
+
+logger:
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+captive_portal:
+
+# --- I2C + PCF8574 hubs (A8/A8S standard) ---
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+  id: bus_a
+
+pcf8574:
+  - id: pcf_out
+    address: 0x24  # relays 1-8
+  - id: pcf_in
+    address: 0x22  # inputs 1-8
+
+# (Optional) Ethernet if you want it:
+# ethernet:
+#   type: LAN8720
+#   mdc_pin: GPIO23
+#   mdio_pin: GPIO18
+#   clk_mode: GPIO17_OUT
+#   phy_addr: 0
+#   # manual_ip:
+#   #   static_ip: 192.168.1.50
+#   #   gateway: 192.168.1.1
+#   #   subnet: 255.255.255.0
+
+# ============================================================
+#  THERMOSTAT INPUTS + FLOW SWITCH
+# ============================================================
+
+binary_sensor:
+  # G - Fan call
+  - platform: gpio
+    name: "Tstat G (Fan Call)"
+    id: tstat_g
+    pin:
+      pcf8574: pcf_in
+      number: 0
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y1 - Cool stage 1
+  - platform: gpio
+    name: "Tstat Y1 (Cool Stage 1)"
+    id: tstat_y1
+    pin:
+      pcf8574: pcf_in
+      number: 1
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y2 - Cool stage 2
+  - platform: gpio
+    name: "Tstat Y2 (Cool Stage 2)"
+    id: tstat_y2
+    pin:
+      pcf8574: pcf_in
+      number: 2
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # W - Hydronic heat (with off-delay)
+  - platform: gpio
+    name: "Tstat W (Heat)"
+    id: tstat_w
+    pin:
+      pcf8574: pcf_in
+      number: 3
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        # New heat call: cancel off-delay and update right away
+        - lambda: |-
+            id(extend_heat) = false;
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Start heat off-delay based on DIP-like setting
+        - script.execute: heat_off_delay
+
+  # Flow Switch FS (optional, for open-loop)
+  # Wire so that "active flow" = ON state; adjust inverted: if needed.
+  - platform: gpio
+    name: "Flow Switch FS"
+    id: flow_switch_fs
+    pin:
+      pcf8574: pcf_in
+      number: 4
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Spares
+  - platform: gpio
+    name: "Spare IN6"
+    id: spare_in6
+    pin:
+      pcf8574: pcf_in
+      number: 5
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN7"
+    id: spare_in7
+    pin:
+      pcf8574: pcf_in
+      number: 6
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN8"
+    id: spare_in8
+    pin:
+      pcf8574: pcf_in
+      number: 7
+      mode: INPUT
+      inverted: true
+
+# ============================================================
+#  SWITCHES: TEMPLATE OPTIONS + RELAY OUTPUTS
+# ============================================================
+
+switch:
+  # --- Template switches (options) ---
+
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_state: true
+
+  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_state: true
+
+  # --- Physical relays on KC868-A8S ---
+
+  # Blower speeds
+  - platform: gpio
+    name: "Blower Speed Low"
+    id: blower_low
+    pin:
+      pcf8574: pcf_out
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-Low"
+    id: blower_medlow
+    pin:
+      pcf8574: pcf_out
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-High"
+    id: blower_medhigh
+    pin:
+      pcf8574: pcf_out
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed High"
+    id: blower_high
+    pin:
+      pcf8574: pcf_out
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: pcf_out
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Electronic Air Cleaner
+  - platform: gpio
+    name: "Electronic Air Cleaner"
+    id: eac_relay
+    pin:
+      pcf8574: pcf_out
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Humidifier
+  - platform: gpio
+    name: "Humidifier Relay"
+    id: humidifier_relay
+    pin:
+      pcf8574: pcf_out
+      number: 6
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Spare relay
+  - platform: gpio
+    name: "Spare Relay 8"
+    id: spare_relay8
+    pin:
+      pcf8574: pcf_out
+      number: 7
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ============================================================
+#  USER SETTINGS (DIP-switch-like + speeds + accessory behavior)
+# ============================================================
+
+# AC configuration & blower off delay (DIP switch equivalents)
+select:
+  - platform: template
+    name: "AC Configuration"
+    id: ac_configuration
+    optimistic: true
+    options:
+      - "Single-Stage A/C"
+      - "Two-Stage A/C"
+    initial_option: "Two-Stage A/C"
+
+number:
+  # Blower off delay in seconds (applied to HEAT only here)
+  # 0 / 30 / 60 / 90 / 120 = DIP-like options.
+  - platform: template
+    name: "Blower Off Delay (sec)"
+    id: blower_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Blower speed mapping 1..4 -> low..high
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+  # EAC/Humidifier enable flags (0/1)
+  - platform: template
+    name: "Enable EAC on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+  - platform: template
+    name: "Enable Humidifier on Heat"
+    id: enable_humid_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+# ============================================================
+#  SCRIPTS: main HVAC logic + heat off delay + pump exercise
+# ============================================================
+
+script:
+  # Main logic: choose mode, blower speed, pump, EAC, humidifier
+  - id: update_hvac
+    then:
+      - lambda: |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1_raw = id(tstat_y1).state;
+          const bool call_y2_raw = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend      = id(extend_heat);
+
+          const bool two_stage_ac = (id(ac_configuration).state == "Two-Stage A/C");
+          const bool call_y2 = two_stage_ac ? call_y2_raw : false;
+          const bool call_y1 = call_y1_raw;
+
+          // Flow switch usage
+          const bool fs_used = id(use_flow_switch_fs).state;
+          const bool fs_ok   = (!fs_used) || id(flow_switch_fs).state;
+
+          bool call_g = call_g_raw;
+
+          // Heat request including off-delay extension
+          bool call_w_effective = call_w_raw || extend;
+
+          // For blower & "heat mode", only allow if FS is OK (when used)
+          const bool heat_allowed = call_w_effective && fs_ok;
+
+          // Track "real" thermostat heat calls for last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+
+          // Turn everything OFF first (only one speed at a time)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+
+          // Pump off by default; turn back on as needed below
+          id(hydronic_pump).turn_off();
+
+          // EAC + humidifier off by default
+          id(eac_relay).turn_off();
+          id(humidifier_relay).turn_off();
+
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Fan-only
+          if (heat_allowed) {
+            speed = (int) id(heat_speed).state;
+            id(hydronic_pump).turn_on();
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+          } else if (call_g) {
+            speed = (int) id(cool_stage1_speed).state;  // fan-only speed
+          }
+
+          // If we have a heat call but FS is not yet made (and FS is enabled),
+          // run the pump to try to establish flow, but DO NOT run the blower.
+          if (call_w_effective && fs_used && !fs_ok) {
+            id(hydronic_pump).turn_on();
+            speed = 0;  // blower stays off until FS_OK
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              break;  // blower off
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // EAC behavior: basically "blower on" logic with per-mode enables
+          bool eac_should_run = false;
+          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+            eac_should_run = true;
+          }
+          if ((call_y1 || call_y2) && ((int)id(enable_eac_on_cool).state == 1)) {
+            eac_should_run = true;
+          }
+          if (call_g && !heat_allowed && !call_y1 && !call_y2 &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            eac_should_run = true;
+          }
+
+          if (blower_on && eac_should_run) {
+            id(eac_relay).turn_on();
+          }
+
+          // Humidifier behavior: heat-only, blower must be on
+          if (blower_on && heat_allowed &&
+              ((int)id(enable_humid_on_heat).state == 1)) {
+            id(humidifier_relay).turn_on();
+          }
+
+  # Heat off-delay (uses blower_off_delay_sec)
+  - id: heat_off_delay
+    mode: restart
+    then:
+      - lambda: |-
+          const int delay_s = (int) id(blower_off_delay_sec).state;
+          if (delay_s <= 0) {
+            // No off-delay configured; clear extend and update immediately
+            id(extend_heat) = false;
+            return;
+          }
+          id(extend_heat) = true;
+      - if:
+          condition:
+            lambda: 'return ((int)id(blower_off_delay_sec).state > 0);'
+          then:
+            - delay: !lambda "return (int)id(blower_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_heat) = false;
+            - script.execute: update_hvac
+
+  # Check if pump exercise is needed at 3am
+  - id: pump_exercise_if_needed
+    then:
+      - lambda: |-
+          if (!id(enable_pump_exercise).state) {
+            ESP_LOGI("pump_exercise", "Pump exercise disabled; skipping.");
+            return;
+          }
+          if (!id(sntp_time).now().is_valid()) {
+            ESP_LOGW("pump_exercise", "Time not valid; skipping daily pump exercise");
+            return;
+          }
+
+          if (id(tstat_w).state) {
+            ESP_LOGI("pump_exercise", "Heat currently on; skipping pump exercise");
+            return;
+          }
+
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts  = id(last_heat_timestamp);
+          const long diff     = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+
+          if (diff >= 24L * 60L * 60L) {
+            ESP_LOGI("pump_exercise", "No heat in last 24h, running pump exercise");
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          } else {
+            ESP_LOGI("pump_exercise", "Heat has run in last 24h, skipping exercise");
+          }
+
+  # Actually run the pump exercise (default 6 minutes)
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 6min     # change if you want a different exercise duration
+      - if:
+          condition:
+            binary_sensor.is_on: tstat_w
+          then:
+            - logger.log: "Pump exercise finished but heat is now ON; handing back to HVAC logic"
+            - script.execute: update_hvac
+          else:
+            - logger.log: "Pump exercise finished, turning pump off"
+            - switch.turn_off: hydronic_pump
+
+# ============================================================
+#  STATUS TEXT SENSORS
+# ============================================================
+
+text_sensor:
+  - platform: template
+    name: "Air Handler Mode"
+    id: air_handler_mode
+    lambda: |-
+      // FS-wait indication when FS is enabled but not yet made
+      if (id(tstat_w).state || id(extend_heat)) {
+        if (id(use_flow_switch_fs).state && !id(flow_switch_fs).state) {
+          return {"HEAT_WAIT_FS"};
+        } else {
+          return {"HEAT"};
+        }
+      } else if (id(tstat_y2).state &&
+                 (id(ac_configuration).state == "Two-Stage A/C")) {
+        return {"COOL_STAGE_2"};
+      } else if (id(tstat_y1).state) {
+        return {"COOL_STAGE_1"};
+      } else if (id(tstat_g).state) {
+        return {"FAN_ONLY"};
+      } else {
+        return {"IDLE"};
+      }
+
+  - platform: template
+    name: "Blower Speed Selected"
+    id: blower_speed_label
+    lambda: |-
+      if (id(blower_low).state)        return {"LOW"};
+      if (id(blower_medlow).state)     return {"MED_LOW"};
+      if (id(blower_medhigh).state)    return {"MED_HIGH"};
+      if (id(blower_high).state)       return {"HIGH"};
+      return {"OFF"};
+
+
+How this lines up with what you asked
+
+
+KC868-A8S instead of A6
+
+
+Uses the correct A8/A8S PCF8574 mapping: outputs @ 0x24 (relays 1–8), inputs @ 0x22 (IN1–IN8). ESPHome Devices+1
+
+
+
+
+DIP-style options replicated
+
+
+AC Configuration select: Single-Stage A/C vs Two-Stage A/C (Y2 is ignored if single-stage). Rheem_92-24161-94-05_RHWB
+
+
+Blower Off Delay (sec) number: 0 / 30 / 60 / 90 / 120 – same durations as the SW1 table. Rheem_92-24161-94-05_RHWB
+
+
+
+
+Open-loop + Flow switch (optional)
+
+
+Use Flow Switch FS template switch:
+
+
+OFF → FS entirely ignored (pump and blower respond immediately to W).
+
+
+ON → On heat:
+
+
+Pump runs as soon as W is called.
+
+
+Blower only comes on once FS is ON, with Air Handler Mode showing HEAT_WAIT_FS if we’re waiting.
+
+
+
+
+
+
+This mirrors the intent of the OEM FS logic (don’t move air until flow is proven), but without the exact 60s on/60s off retry pattern. Rheem_92-24161-94-05_RHWB
+
+
+
+
+Pump exercise behavior fixed
+
+
+Enable Pump Exercise:
+
+
+ON → Run pump once per day at 3:00 AM for 6 minutes only if there hasn’t been a heat call in 24 hours. Rheem_92-24161-94-05_RHWB
+
+
+OFF → Never do the automatic exercise.
+
+
+
+
+That should stop the controller from stealing hot water multiple times per day like the OEM board.
+
+
+
+
+Heat off-delay
+
+
+W dropping triggers heat_off_delay, which uses whatever you set in Blower Off Delay (sec) (0–120).
+
+
+During this time, extend_heat keeps the system in heat mode, so blower and pump both stay on for that extra period, exactly like you originally wanted.
+
+
+
+
+If you’d like, the next tweak we can do is:
+
+
+Add a cooling off-delay that shares the same Blower Off Delay (sec) (closer to how Rheem describes the BTD for both heating/cooling), or
+
+
+Add a separate Cooling Off Delay (sec) if you want different times for heat vs cool.
+
+Sources
+
+----------------------- Q ----------------------
+Add a separate Cooling Off Delay (sec). need to add Heating On Delay (sec) to allow coil to heat before fan starts.
+
+----------------------- A ----------------------
+Thought for 1m 32sNice upgrades 👍 Separate cool-off delay + heat-on delay makes this feel like a modern air handler.
+Below is a full updated ESPHome YAML for the KC868-A8S with:
+
+
+Heating Off Delay (sec) – for blower/pump run-on after W drops (what we previously had, renamed).
+
+
+Cooling Off Delay (sec) – separate, for blower run-on after cooling ends.
+
+
+Heating On Delay (sec) – pump starts immediately, blower waits for coil to warm.
+
+
+I also kept:
+
+
+Optional Flow Switch FS logic (enable/disable).
+
+
+Daily pump exercise (once/day at 3 AM, only if no heat in last 24h, and can be turned off).
+
+
+Separate EAC and humidifier relays.
+
+
+You can paste this over the previous A8S config.
+
+
+esphome:
+  name: kc868-a8s-airhandler
+  friendly_name: "KC868 A8S Air Handler"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# --- Time (for 3am pump exercise + 24h tracking) ---
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Chicago"
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 3
+        then:
+          - script.execute: pump_exercise_if_needed
+
+# --- Globals ---
+globals:
+  # Unix timestamp of last time HEAT (W) was actually called
+  - id: last_heat_timestamp
+    type: long
+    restore_value: yes
+    initial_value: '0'
+
+  # True while we are in the "heat off delay" window
+  - id: extend_heat
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # True while we are in the "cool off delay" window
+  - id: extend_cool
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Whether the blower is allowed to run in heat mode
+  # (for Heating On Delay / coil warm-up)
+  - id: heat_fan_allowed
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "kc868-a8s-fallback"
+    password: "changeme123"
+
+logger:
+
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+captive_portal:
+
+# --- I2C + PCF8574 hubs (A8/A8S standard) ---
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+  id: bus_a
+
+pcf8574:
+  - id: pcf_out
+    address: 0x24  # relays 1-8
+  - id: pcf_in
+    address: 0x22  # inputs 1-8
+
+# ============================================================
+#  THERMOSTAT INPUTS + FLOW SWITCH
+# ============================================================
+
+binary_sensor:
+  # G - Fan call
+  - platform: gpio
+    name: "Tstat G (Fan Call)"
+    id: tstat_g
+    pin:
+      pcf8574: pcf_in
+      number: 0
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y1 - Cool stage 1
+  - platform: gpio
+    name: "Tstat Y1 (Cool Stage 1)"
+    id: tstat_y1
+    pin:
+      pcf8574: pcf_in
+      number: 1
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Handle potential cooling off delay
+        - script.execute: cooling_off_delay
+        - script.execute: update_hvac
+
+  # Y2 - Cool stage 2
+  - platform: gpio
+    name: "Tstat Y2 (Cool Stage 2)"
+    id: tstat_y2
+    pin:
+      pcf8574: pcf_in
+      number: 2
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Handle potential cooling off delay
+        - script.execute: cooling_off_delay
+        - script.execute: update_hvac
+
+  # W - Hydronic heat (with ON delay & OFF delay)
+  - platform: gpio
+    name: "Tstat W (Heat)"
+    id: tstat_w
+    pin:
+      pcf8574: pcf_in
+      number: 3
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        # New heat call: cancel any previous off-delay and reset fan permission
+        - lambda: |-
+            id(extend_heat) = false;
+            id(heat_fan_allowed) = false;
+        # Turn pump on immediately and evaluate logic
+        - script.execute: update_hvac
+        # Start heating ON delay (coil warm-up)
+        - script.execute: heating_on_delay
+    on_release:
+      then:
+        # Start heat OFF delay based on Heating Off Delay setting
+        - script.execute: heat_off_delay
+
+  # Flow Switch FS (optional, for open-loop)
+  # Wire so that "active flow" = ON state; adjust inverted: if needed.
+  - platform: gpio
+    name: "Flow Switch FS"
+    id: flow_switch_fs
+    pin:
+      pcf8574: pcf_in
+      number: 4
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Spares
+  - platform: gpio
+    name: "Spare IN6"
+    id: spare_in6
+    pin:
+      pcf8574: pcf_in
+      number: 5
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN7"
+    id: spare_in7
+    pin:
+      pcf8574: pcf_in
+      number: 6
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN8"
+    id: spare_in8
+    pin:
+      pcf8574: pcf_in
+      number: 7
+      mode: INPUT
+      inverted: true
+
+# ============================================================
+#  SWITCHES: TEMPLATE OPTIONS + RELAY OUTPUTS
+# ============================================================
+
+switch:
+  # --- Template switches (options) ---
+
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_state: true
+
+  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_state: true
+
+  # --- Physical relays on KC868-A8S ---
+
+  # Blower speeds
+  - platform: gpio
+    name: "Blower Speed Low"
+    id: blower_low
+    pin:
+      pcf8574: pcf_out
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-Low"
+    id: blower_medlow
+    pin:
+      pcf8574: pcf_out
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-High"
+    id: blower_medhigh
+    pin:
+      pcf8574: pcf_out
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed High"
+    id: blower_high
+    pin:
+      pcf8574: pcf_out
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: pcf_out
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Electronic Air Cleaner
+  - platform: gpio
+    name: "Electronic Air Cleaner"
+    id: eac_relay
+    pin:
+      pcf8574: pcf_out
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Humidifier
+  - platform: gpio
+    name: "Humidifier Relay"
+    id: humidifier_relay
+    pin:
+      pcf8574: pcf_out
+      number: 6
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Spare relay
+  - platform: gpio
+    name: "Spare Relay 8"
+    id: spare_relay8
+    pin:
+      pcf8574: pcf_out
+      number: 7
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ============================================================
+#  USER SETTINGS (DIP-switch-like + speeds + accessory behavior)
+# ============================================================
+
+select:
+  # AC configuration (DIP-style)
+  - platform: template
+    name: "AC Configuration"
+    id: ac_configuration
+    optimistic: true
+    options:
+      - "Single-Stage A/C"
+      - "Two-Stage A/C"
+    initial_option: "Two-Stage A/C"
+
+number:
+  # Heating OFF delay in seconds
+  - platform: template
+    name: "Heating Off Delay (sec)"
+    id: heating_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Cooling OFF delay in seconds
+  - platform: template
+    name: "Cooling Off Delay (sec)"
+    id: cooling_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Heating ON delay in seconds (coil warm-up before blower)
+  - platform: template
+    name: "Heating On Delay (sec)"
+    id: heating_on_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 5
+    initial_value: 0
+
+  # Blower speed mapping 1..4 -> low..high
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+  # EAC/Humidifier enable flags (0/1)
+  - platform: template
+    name: "Enable EAC on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+  - platform: template
+    name: "Enable Humidifier on Heat"
+    id: enable_humid_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+# ============================================================
+#  SCRIPTS: main HVAC logic + delays + pump exercise
+# ============================================================
+
+script:
+  # Main logic: choose mode, blower speed, pump, EAC, humidifier
+  - id: update_hvac
+    then:
+      - lambda: |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1_raw = id(tstat_y1).state;
+          const bool call_y2_raw = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend_h    = id(extend_heat);
+          const bool cool_hold   = id(extend_cool);
+
+          const bool two_stage_ac = (id(ac_configuration).state == "Two-Stage A/C");
+          const bool call_y2 = two_stage_ac ? call_y2_raw : false;
+          const bool call_y1 = call_y1_raw;
+
+          // Flow switch usage
+          const bool fs_used = id(use_flow_switch_fs).state;
+          const bool fs_ok   = (!fs_used) || id(flow_switch_fs).state;
+
+          bool call_g = call_g_raw;
+
+          // Heat request including off-delay extension
+          bool call_w_effective = call_w_raw || extend_h;
+
+          // For blower & "heat mode", only allow if FS is OK (when used)
+          const bool heat_allowed = call_w_effective && fs_ok;
+
+          // Track "real" thermostat heat calls for last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+
+          // Turn everything OFF first (only one speed at a time)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+
+          // Pump and accessories off by default
+          id(hydronic_pump).turn_off();
+          id(eac_relay).turn_off();
+          id(humidifier_relay).turn_off();
+
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          // Determine if we are in cooling off-delay "hold"
+          bool cool_off_hold = false;
+          if (cool_hold &&
+              !call_w_effective && !call_y1 && !call_y2 && !call_g) {
+            cool_off_hold = true;
+          }
+
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
+          if (heat_allowed) {
+            // Pump always runs during heat call (incl. off-delay)
+            id(hydronic_pump).turn_on();
+
+            // Respect Heating On Delay for the blower
+            if (id(heat_fan_allowed)) {
+              speed = (int) id(heat_speed).state;
+            } else {
+              speed = 0;  // Pump only, no blower yet
+            }
+
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (cool_off_hold) {
+            // Cooling off-delay: fan-only at stage-1 speed
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (call_g) {
+            // Fan-only: use cool stage 1 speed
+            speed = (int) id(cool_stage1_speed).state;
+          }
+
+          // If we have a heat call but FS is enabled and NOT OK,
+          // run the pump to try to establish flow, but DO NOT run the blower.
+          if (call_w_effective && fs_used && !fs_ok) {
+            id(hydronic_pump).turn_on();
+            // If fan was allowed, override speed to 0 until FS_OK
+            speed = 0;
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              break;  // blower off
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // EAC behavior: basically "blower on" logic with per-mode enables
+          bool eac_should_run = false;
+          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+            eac_should_run = true;
+          }
+          if ((call_y1 || call_y2 || cool_off_hold) &&
+              ((int)id(enable_eac_on_cool).state == 1)) {
+            eac_should_run = true;
+          }
+          if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            eac_should_run = true;
+          }
+
+          if (blower_on && eac_should_run) {
+            id(eac_relay).turn_on();
+          }
+
+          // Humidifier behavior: heat-only, blower must be on
+          if (blower_on && heat_allowed &&
+              ((int)id(enable_humid_on_heat).state == 1)) {
+            id(humidifier_relay).turn_on();
+          }
+
+          // If no effective heat call anymore, clear heat_fan_allowed so next cycle warms again
+          if (!call_w_effective && !call_w_raw) {
+            id(heat_fan_allowed) = false;
+          }
+
+  # Heating OFF delay (uses Heating Off Delay (sec))
+  - id: heat_off_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return (int)id(heating_off_delay_sec).state > 0;'
+          then:
+            - lambda: |-
+                id(extend_heat) = true;
+            - delay: !lambda "return (int)id(heating_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+
+  # Heating ON delay (coil warm-up before blower)
+  - id: heating_on_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: 'return (int)id(heating_on_delay_sec).state > 0;'
+          then:
+            - delay: !lambda "return (int)id(heating_on_delay_sec).state * 1000;"
+            - lambda: |-
+                // Only allow fan if heat call is still active (W or off-delay)
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+
+  # Cooling OFF delay (blower run-on after cooling)
+  - id: cooling_off_delay
+    mode: restart
+    then:
+      - lambda: |-
+          const int delay_s = (int) id(cooling_off_delay_sec).state;
+          // If delay is disabled, ensure we clear and exit
+          if (delay_s <= 0) {
+            id(extend_cool) = false;
+            return;
+          }
+          // Only start cool-off hold if no other calls are active
+          if (id(tstat_w).state || id(tstat_y1).state ||
+              id(tstat_y2).state || id(tstat_g).state) {
+            id(extend_cool) = false;
+            return;
+          }
+          id(extend_cool) = true;
+      - if:
+          condition:
+            lambda: 'return id(extend_cool);'
+          then:
+            - delay: !lambda "return (int)id(cooling_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_cool) = false;
+            - script.execute: update_hvac
+
+  # Check if pump exercise is needed at 3am
+  - id: pump_exercise_if_needed
+    then:
+      - lambda: |-
+          if (!id(enable_pump_exercise).state) {
+            ESP_LOGI("pump_exercise", "Pump exercise disabled; skipping.");
+            return;
+          }
+          if (!id(sntp_time).now().is_valid()) {
+            ESP_LOGW("pump_exercise", "Time not valid; skipping daily pump exercise");
+            return;
+          }
+
+          if (id(tstat_w).state) {
+            ESP_LOGI("pump_exercise", "Heat currently on; skipping pump exercise");
+            return;
+          }
+
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts  = id(last_heat_timestamp);
+          const long diff     = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+
+          if (diff >= 24L * 60L * 60L) {
+            ESP_LOGI("pump_exercise", "No heat in last 24h, running pump exercise");
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          } else {
+            ESP_LOGI("pump_exercise", "Heat has run in last 24h, skipping exercise");
+          }
+
+  # Actually run the pump exercise (default 6 minutes)
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 6min     # change if you want a different exercise duration
+      - if:
+          condition:
+            binary_sensor.is_on: tstat_w
+          then:
+            - logger.log: "Pump exercise finished but heat is now ON; handing back to HVAC logic"
+            - script.execute: update_hvac
+          else:
+            - logger.log: "Pump exercise finished, turning pump off"
+            - switch.turn_off: hydronic_pump
+
+# ============================================================
+#  STATUS TEXT SENSORS
+# ============================================================
+
+text_sensor:
+  - platform: template
+    name: "Air Handler Mode"
+    id: air_handler_mode
+    lambda: |-
+      if (id(tstat_w).state || id(extend_heat)) {
+        if (id(use_flow_switch_fs).state && !id(flow_switch_fs).state) {
+          return {"HEAT_WAIT_FS"};
+        } else {
+          return {"HEAT"};
+        }
+      } else if (id(tstat_y2).state &&
+                 (id(ac_configuration).state == "Two-Stage A/C")) {
+        return {"COOL_STAGE_2"};
+      } else if (id(tstat_y1).state) {
+        return {"COOL_STAGE_1"};
+      } else if (id(extend_cool)) {
+        return {"COOL_OFF_DELAY"};
+      } else if (id(tstat_g).state) {
+        return {"FAN_ONLY"};
+      } else {
+        return {"IDLE"};
+      }
+
+  - platform: template
+    name: "Blower Speed Selected"
+    id: blower_speed_label
+    lambda: |-
+      if (id(blower_low).state)        return {"LOW"};
+      if (id(blower_medlow).state)     return {"MED_LOW"};
+      if (id(blower_medhigh).state)    return {"MED_HIGH"};
+      if (id(blower_high).state)       return {"HIGH"};
+      return {"OFF"};
+
+
+Behavior recap
+
+
+Heating On Delay (sec)
+
+
+W comes on → pump turns on immediately.
+
+
+Blower waits Heating On Delay seconds before running (assuming heat still active).
+
+
+
+
+Heating Off Delay (sec)
+
+
+W drops → system stays in “heat” for that many seconds (pump + blower keep running).
+
+
+
+
+Cooling Off Delay (sec)
+
+
+When Y1/Y2 go idle (and no G/W) → blower runs for that many seconds at stage-1 cool speed, then shuts off.
+
+
+
+
+If you want, next step we can tune default values (e.g. 30 s heat on delay, 60 s cool off delay, 90 s heat off delay) to match how the coil actually feels in your system.
+
+
+----------------------- Q ----------------------
+lets add 2 ds18b20 sensors. one for heat and one for cool to monitor coil temps.
+
+----------------------- A ----------------------
+Thought for 27sPerfect use case for DS18B20s 👍 We’ll just hang them on the A8S’s 1-Wire pin and expose them as Heat Coil Temp and Cool Coil Temp. For now they’ll be monitoring only (no logic changes yet).
+The KC868-A8/A8S reference config uses GPIO14 for DS18B20 via the new one_wire + dallas_temp components. ESPHome Devices+1
+Below are the minimal changes you need to make to the YAML I gave you last:
+
+1) Wire the sensors
+
+
+DS18B20 GND → A8S GND
+
+
+DS18B20 VCC → A8S 3.3V
+
+
+DS18B20 DQ (data pin) → GPIO14 on the A8S
+
+
+Put a 4.7k pull-up resistor between DQ and 3.3V (you can share the same bus for both sensors).
+
+
+
+2) Add the 1-Wire bus
+Right after your existing i2c: / pcf8574: blocks, add:
+
+one_wire:
+  - platform: gpio
+    id: onewire_bus
+    pin: GPIO14
+    update_interval: 30s
+
+
+3) Add the two DS18B20 sensors
+At the bottom of your YAML (after text_sensor: or anywhere global), add a new sensor: section if you don’t already have one:
+yamlCopy codesensor:
+  # Heat coil temperature sensor (DS18B20 #1)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x0000000000000000  # <-- REPLACE with real address
+    name: "Heat Coil Temp"
+    id: heat_coil_temp
+    update_interval: 30s
+
+  # Cool coil temperature sensor (DS18B20 #2)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x1111111111111111  # <-- REPLACE with real address
+    name: "Cool Coil Temp"
+    id: cool_coil_temp
+    update_interval: 30s
+
+
+⚠️ Important:
+For two DS18B20s on the same bus, you must set addresses. The placeholders above will not work until you replace them.
+
+
+4) How to get the DS18B20 addresses
+
+
+Temporarily change the sensor block to no addresses:
+yamlCopy codesensor:
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    name: "DS18B20 Raw"
+    update_interval: 30s
+
+
+
+Flash & boot the node, then watch the ESPHome logs. You’ll see lines like:
+lessCopy code[D][dallas_temp:XXX]: Found sensors:
+[D][dallas_temp:XXX]: 0x3c00000abcdef128
+[D][dallas_temp:XXX]: 0x4b00000fedcba928
+
+
+
+Take those two addresses and put them back into the config:
+yamlCopy codesensor:
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x3c00000abcdef128
+    name: "Heat Coil Temp"
+    id: heat_coil_temp
+
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x4b00000fedcba928
+    name: "Cool Coil Temp"
+    id: cool_coil_temp
+
+
+
+Re-upload, and you’ll get two separate entities in HA:
+
+
+sensor.heat_coil_temp
+
+
+sensor.cool_coil_temp
+
+
+
+
+
+Right now these are just exposed for monitoring. If you want, next step we can:
+
+
+Use heat coil temp to automatically end the Heating On Delay (fan starts when coil hits X°F), or
+
+
+Use cool coil temp to confirm coil frost / efficiency.
+
+
+Sources
+
+----------------------- Q ----------------------
+Failed config
+
+one_wire.gpio: [source /config/esphome/kc868-a8s-airhandler.yaml:83]
+  platform: gpio
+  id: onewire_bus
+  pin: GPIO14
+  
+  [update_interval] is an invalid option for [one_wire.gpio]. Please check the indentation.
+  update_interval: 30s
+
+----------------------- A ----------------------
+Good catch — that error is because update_interval is not a valid parameter for the one_wire: component.
+The interval belongs on each dallas_temp (or sensor:) entry, not the one_wire bus itself.
+Here’s the corrected block 👇
+
+✅ Fixed DS18B20 section
+
+# --- OneWire bus for DS18B20 sensors ---
+one_wire:
+  - platform: gpio
+    id: onewire_bus
+    pin: GPIO14   # shared data line for both sensors
+
+sensor:
+  # Heat coil temperature sensor (DS18B20 #1)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x3c00000abcdef128  # <-- replace with your real address
+    name: "Heat Coil Temp"
+    id: heat_coil_temp
+    update_interval: 30s
+
+  # Cool coil temperature sensor (DS18B20 #2)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x4b00000fedcba928  # <-- replace with your real address
+    name: "Cool Coil Temp"
+    id: cool_coil_temp
+    update_interval: 30s
+
+
+Quick steps to test & get addresses
+
+
+Temporarily comment out the address: lines and leave only one generic DS18B20 entry:
+yamlCopy codesensor:
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    name: "DS18B20 Raw"
+
+
+
+Upload and check the ESPHome logs; you’ll see something like:
+lessCopy code[D][dallas_temp:070]: Found sensors:
+[D][dallas_temp:075]: 0x3c00000abcdef128
+[D][dallas_temp:075]: 0x4b00000fedcba928
+
+
+
+Copy those addresses back into the config above and re-flash.
+
+
+
+After that, you’ll get two Home Assistant entities:
+
+
+sensor.heat_coil_temp
+
+
+sensor.cool_coil_temp
+
+
+
+If you want, we can make the next step use these sensors to automatically start the blower once the coil warms up (for example, blower starts when heat_coil_temp > 110°F instead of a fixed time). Would you like to add that logic?
+
+----------------------- Q ----------------------
+Failed config
+
+switch.template: [source /config/esphome/kc868-a8s-airhandler.yaml:236]
+  platform: template
+  name: Use Flow Switch FS
+  id: use_flow_switch_fs
+  optimistic: True
+  
+  The restore_state option has been removed in 2023.7.0. Use the restore_mode option instead.
+  restore_state: True
+
+----------------------- A ----------------------
+Thought for 11sYep, that error is just ESPHome being newer than the config I wrote. restore_state got killed off for template switches; you now have to use restore_mode.
+You’ve got two template switches with restore_state: true:
+
+
+Use Flow Switch FS
+
+
+Enable Pump Exercise
+
+
+Here’s exactly what to change.
+
+Fix for Use Flow Switch FS
+Old:
+
+switch:
+  # --- Template switches (options) ---
+
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_state: true
+
+New:
+yamlCopy codeswitch:
+  # --- Template switches (options) ---
+
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+
+Fix for Enable Pump Exercise
+Old:
+yamlCopy code  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_state: true
+
+New:
+yamlCopy code  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+
+RESTORE_DEFAULT_ON means:
+
+
+On first boot, they default to ON (matching what we wanted).
+
+
+On subsequent boots, ESPHome restores the last state from flash.
+
+
+After you make those two edits and delete the restore_state lines entirely, it should compile cleanly.
+If it throws any other warnings after that, paste them in and we’ll clean those up too.
+
+
+----------------------- Q ----------------------
+Failed config
+
+script: [source /config/esphome/kc868-a8s-airhandler.yaml:451]
+  - id: update_hvac
+    then: 
+      - lambda: !lambda |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1_raw = id(tstat_y1).state;
+          const bool call_y2_raw = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend_h    = id(extend_heat);
+          const bool cool_hold   = id(extend_cool);
+          
+          const bool two_stage_ac = (id(ac_configuration).state == "Two-Stage A/C");
+          const bool call_y2 = two_stage_ac ? call_y2_raw : false;
+          const bool call_y1 = call_y1_raw;
+          
+          // Flow switch usage
+          const bool fs_used = id(use_flow_switch_fs).state;
+          const bool fs_ok   = (!fs_used) || id(flow_switch_fs).state;
+          
+          bool call_g = call_g_raw;
+          
+          // Heat request including off-delay extension
+          bool call_w_effective = call_w_raw || extend_h;
+          
+          // For blower & "heat mode", only allow if FS is OK (when used)
+          const bool heat_allowed = call_w_effective && fs_ok;
+          
+          // Track "real" thermostat heat calls for last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+          
+          // Turn everything OFF first (only one speed at a time)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+          
+          // Pump and accessories off by default
+          id(hydronic_pump).turn_off();
+          id(eac_relay).turn_off();
+          id(humidifier_relay).turn_off();
+          
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+          
+          // Determine if we are in cooling off-delay "hold"
+          bool cool_off_hold = false;
+          if (cool_hold &&
+              !call_w_effective && !call_y1 && !call_y2 && !call_g) {
+            cool_off_hold = true;
+          }
+          
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
+          if (heat_allowed) {
+            // Pump always runs during heat call (incl. off-delay)
+            id(hydronic_pump).turn_on();
+          
+            // Respect Heating On Delay for the blower
+            if (id(heat_fan_allowed)) {
+              speed = (int) id(heat_speed).state;
+            } else {
+              speed = 0;  // Pump only, no blower yet
+            }
+          
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+          
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+          
+          } else if (cool_off_hold) {
+            // Cooling off-delay: fan-only at stage-1 speed
+            speed = (int) id(cool_stage1_speed).state;
+          
+          } else if (call_g) {
+            // Fan-only: use cool stage 1 speed
+            speed = (int) id(cool_stage1_speed).state;
+          }
+          
+          // If we have a heat call but FS is enabled and NOT OK,
+          // run the pump to try to establish flow, but DO NOT run the blower.
+          if (call_w_effective && fs_used && !fs_ok) {
+            id(hydronic_pump).turn_on();
+            // If fan was allowed, override speed to 0 until FS_OK
+            speed = 0;
+          }
+          
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              break;  // blower off
+          }
+          
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+          
+          // EAC behavior: basically "blower on" logic with per-mode enables
+          bool eac_should_run = false;
+          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+            eac_should_run = true;
+          }
+          if ((call_y1 || call_y2 || cool_off_hold) &&
+              ((int)id(enable_eac_on_cool).state == 1)) {
+            eac_should_run = true;
+          }
+          if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            eac_should_run = true;
+          }
+          
+          if (blower_on && eac_should_run) {
+            id(eac_relay).turn_on();
+          }
+          
+          // Humidifier behavior: heat-only, blower must be on
+          if (blower_on && heat_allowed &&
+              ((int)id(enable_humid_on_heat).state == 1)) {
+            id(humidifier_relay).turn_on();
+          }
+          
+          // If no effective heat call anymore, clear heat_fan_allowed so next cycle warms again
+          if (!call_w_effective && !call_w_raw) {
+            id(heat_fan_allowed) = false;
+          }
+    mode: single
+    parameters: {}
+  - id: heat_off_delay
+    mode: restart
+    then: 
+      - if: 
+          condition: 
+            lambda: !lambda |-
+              return (int)id(heating_off_delay_sec).state > 0;
+          then: 
+            - lambda: !lambda |-
+                id(extend_heat) = true;
+            - delay: !lambda |-
+                return (int)id(heating_off_delay_sec).state * 1000;
+            - lambda: !lambda |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: 
+                id: update_hvac
+          else: 
+            - lambda: !lambda |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: 
+                id: update_hvac
+    parameters: {}
+  - id: heating_on_delay
+    mode: restart
+    then: 
+      - if: 
+          condition: 
+            lambda: !lambda |-
+              return (int)id(heating_on_delay_sec).state > 0;
+          then: 
+            - delay: !lambda |-
+                return (int)id(heating_on_delay_sec).state * 1000;
+            - lambda: !lambda |-
+                // Only allow fan if heat call is still active (W or off-delay)
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: 
+                id: update_hvac
+          else: 
+            - lambda: !lambda |-
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: 
+                id: update_hvac
+    parameters: {}
+  - id: cooling_off_delay
+    mode: restart
+    then: 
+      - lambda: !lambda |-
+          const int delay_s = (int) id(cooling_off_delay_sec).state;
+          // If delay is disabled, ensure we clear and exit
+          if (delay_s <= 0) {
+            id(extend_cool) = false;
+            return;
+          }
+          // Only start cool-off hold if no other calls are active
+          if (id(tstat_w).state || id(tstat_y1).state ||
+              id(tstat_y2).state || id(tstat_g).state) {
+            id(extend_cool) = false;
+            return;
+          }
+          id(extend_cool) = true;
+      - if: 
+          condition: 
+            lambda: !lambda |-
+              return id(extend_cool);
+          then: 
+            - delay: !lambda |-
+                return (int)id(cooling_off_delay_sec).state * 1000;
+            - lambda: !lambda |-
+                id(extend_cool) = false;
+            - script.execute: 
+                id: update_hvac
+    parameters: {}
+  - id: pump_exercise_if_needed
+    then: 
+      - lambda: !lambda |-
+          if (!id(enable_pump_exercise).state) {
+            ESP_LOGI("pump_exercise", "Pump exercise disabled; skipping.");
+            return;
+          }
+          if (!id(sntp_time).now().is_valid()) {
+            ESP_LOGW("pump_exercise", "Time not valid; skipping daily pump exercise");
+            return;
+          }
+          
+          if (id(tstat_w).state) {
+            ESP_LOGI("pump_exercise", "Heat currently on; skipping pump exercise");
+            return;
+          }
+          
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts  = id(last_heat_timestamp);
+          const long diff     = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+          
+          if (diff >= 24L * 60L * 60L) {
+            ESP_LOGI("pump_exercise", "No heat in last 24h, running pump exercise");
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          } else {
+            ESP_LOGI("pump_exercise", "Heat has run in last 24h, skipping exercise");
+          }
+    mode: single
+    parameters: {}
+  - id: pump_exercise_run
+    mode: restart
+    then: 
+      - delay: 6min
+      - if: 
+          condition: 
+            binary_sensor.is_on: 
+              id: tstat_w
+          then: 
+            - 
+              Couldn't find any component that can be used for 'logger::Logger'. Are you missing a hub declaration?.
+              logger.log: 
+                format: Pump exercise finished but heat is now ON; handing back to HVAC logic
+                tag: main
+                level: DEBUG
+                args: []
+            - script.execute: 
+                id: update_hvac
+          else: 
+            - 
+              Couldn't find any component that can be used for 'logger::Logger'. Are you missing a hub declaration?.
+              logger.log: 
+                format: Pump exercise finished, turning pump off
+                tag: main
+
+----------------------- A ----------------------
+Thought for 37sYeah, this one’s coming from inside the script: block, and that long error dump is ESPHome showing you its internal representation. Two things going on:
+
+
+The logger.log actions in pump_exercise_run are confusing it (hence the “Couldn't find any component that can be used for 'logger::Logger'” bit).
+
+
+Your script: section has all those parameters: {} etc. that we don’t actually need.
+
+
+Easiest fix: replace your entire script: section with the cleaned version below. I’ve:
+
+
+Removed all logger.log actions (not essential).
+
+
+Removed parameters: {}.
+
+
+Kept all the control logic you want:
+
+
+Heat on delay
+
+
+Separate heat off delay
+
+
+Separate cool off delay
+
+
+Pump exercise
+
+
+
+
+Just paste this over everything from script: down to right before text_sensor: in your current file.
+
+script:
+  # Main logic: choose mode, blower speed, pump, EAC, humidifier
+  - id: update_hvac
+    mode: single
+    then:
+      - lambda: |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1_raw = id(tstat_y1).state;
+          const bool call_y2_raw = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend_h    = id(extend_heat);
+          const bool cool_hold   = id(extend_cool);
+
+          const bool two_stage_ac = (id(ac_configuration).state == "Two-Stage A/C");
+          const bool call_y2 = two_stage_ac ? call_y2_raw : false;
+          const bool call_y1 = call_y1_raw;
+
+          // Flow switch usage
+          const bool fs_used = id(use_flow_switch_fs).state;
+          const bool fs_ok   = (!fs_used) || id(flow_switch_fs).state;
+
+          bool call_g = call_g_raw;
+
+          // Heat request including off-delay extension
+          bool call_w_effective = call_w_raw || extend_h;
+
+          // For blower & "heat mode", only allow if FS is OK (when used)
+          const bool heat_allowed = call_w_effective && fs_ok;
+
+          // Track "real" thermostat heat calls for last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+
+          // Turn everything OFF first (only one speed at a time)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+
+          // Pump and accessories off by default
+          id(hydronic_pump).turn_off();
+          id(eac_relay).turn_off();
+          id(humidifier_relay).turn_off();
+
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          // Determine if we are in cooling off-delay "hold"
+          bool cool_off_hold = false;
+          if (cool_hold &&
+              !call_w_effective && !call_y1 && !call_y2 && !call_g) {
+            cool_off_hold = true;
+          }
+
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
+          if (heat_allowed) {
+            // Pump always runs during heat call (incl. off-delay)
+            id(hydronic_pump).turn_on();
+
+            // Respect Heating On Delay for the blower
+            if (id(heat_fan_allowed)) {
+              speed = (int) id(heat_speed).state;
+            } else {
+              speed = 0;  // Pump only, no blower yet
+            }
+
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (cool_off_hold) {
+            // Cooling off-delay: fan-only at stage-1 speed
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (call_g) {
+            // Fan-only: use cool stage 1 speed
+            speed = (int) id(cool_stage1_speed).state;
+          }
+
+          // If we have a heat call but FS is enabled and NOT OK,
+          // run the pump to try to establish flow, but DO NOT run the blower.
+          if (call_w_effective && fs_used && !fs_ok) {
+            id(hydronic_pump).turn_on();
+            // If fan was allowed, override speed to 0 until FS_OK
+            speed = 0;
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              break;  // blower off
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // EAC behavior: basically "blower on" logic with per-mode enables
+          bool eac_should_run = false;
+          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+            eac_should_run = true;
+          }
+          if ((call_y1 || call_y2 || cool_off_hold) &&
+              ((int)id(enable_eac_on_cool).state == 1)) {
+            eac_should_run = true;
+          }
+          if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            eac_should_run = true;
+          }
+
+          if (blower_on && eac_should_run) {
+            id(eac_relay).turn_on();
+          }
+
+          // Humidifier behavior: heat-only, blower must be on
+          if (blower_on && heat_allowed &&
+              ((int)id(enable_humid_on_heat).state == 1)) {
+            id(humidifier_relay).turn_on();
+          }
+
+          // If no effective heat call anymore, clear heat_fan_allowed so next cycle warms again
+          if (!call_w_effective && !call_w_raw) {
+            id(heat_fan_allowed) = false;
+          }
+
+  # Heating OFF delay (uses Heating Off Delay (sec))
+  - id: heat_off_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (int) id(heating_off_delay_sec).state > 0;
+          then:
+            - lambda: |-
+                id(extend_heat) = true;
+            - delay: !lambda "return (int) id(heating_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+
+  # Heating ON delay (coil warm-up before blower)
+  - id: heating_on_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (int) id(heating_on_delay_sec).state > 0;
+          then:
+            - delay: !lambda "return (int) id(heating_on_delay_sec).state * 1000;"
+            - lambda: |-
+                // Only allow fan if heat call is still active (W or off-delay)
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+
+  # Cooling OFF delay (blower run-on after cooling)
+  - id: cooling_off_delay
+    mode: restart
+    then:
+      - lambda: |-
+          const int delay_s = (int) id(cooling_off_delay_sec).state;
+          // If delay is disabled, ensure we clear and exit
+          if (delay_s <= 0) {
+            id(extend_cool) = false;
+            return;
+          }
+          // Only start cool-off hold if no other calls are active
+          if (id(tstat_w).state || id(tstat_y1).state ||
+              id(tstat_y2).state || id(tstat_g).state) {
+            id(extend_cool) = false;
+            return;
+          }
+          id(extend_cool) = true;
+      - if:
+          condition:
+            lambda: |-
+              return id(extend_cool);
+          then:
+            - delay: !lambda "return (int) id(cooling_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_cool) = false;
+            - script.execute: update_hvac
+
+  # Check if pump exercise is needed at 3am
+  - id: pump_exercise_if_needed
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(enable_pump_exercise).state) {
+            return;
+          }
+          if (!id(sntp_time).now().is_valid()) {
+            return;
+          }
+
+          if (id(tstat_w).state) {
+            return;
+          }
+
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts  = id(last_heat_timestamp);
+          const long diff     = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+
+          if (diff >= 24L * 60L * 60L) {
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          }
+
+  # Actually run the pump exercise (default 6 minutes)
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 6min
+      - if:
+          condition:
+            binary_sensor.is_on: tstat_w
+          then:
+            - script.execute: update_hvac
+          else:
+            - switch.turn_off: hydronic_pump
+
+A couple of quick sanity checks after you paste this:
+
+
+Make sure you still have logger: once at the top level (not nested under anything). It’s fine even though we’re not using logger.log now.
+
+
+Confirm you don’t have a second script: block elsewhere in the file.
+
+
+Once this compiles, if you want logging back for debugging, we can add very simple - logger.log: "text" lines in a couple of places instead of the auto-generated “format/tag/args” version that was causing trouble.
+
+
+----------------------- Q ----------------------
+power for the system will not be a problem as the thermostat is a custom built one that uses an lm2596t-5 regulator and full wave bridge. the ac relay in the condensor is ac so it can do either or.
+
+----------------------- A ----------------------
+Thought for 6sGotcha—that makes everything a lot easier 👍
+Given what you just said, here’s how it all lines up with the KC868-A8S + ESPHome setup we’ve been building:
+1. Custom thermostat power (LM2596T-5 + bridge)
+
+
+Your thermostat is already rectifying 24 VAC with a full-wave bridge and dropping to 5 V with the LM2596T-5.
+
+
+Since it’s a self-contained low-voltage DC system, you don’t need to rely on the air handler board for powering the stat at all.
+
+
+All that really matters for the KC868 is that:
+
+
+The contact closures for G/Y1/Y2/W behave like dry contacts, or
+
+
+You use the 24 VAC from your system transformer and feed it through relays/optos into the A8S inputs.
+
+
+
+
+As long as the KC868 input side sees clean, isolated closures or appropriate low-voltage signaling, we’re good.
+2. Condenser / AC contactor coil
+You mentioned:
+
+the ac relay in the condensor is ac so it can do either or.
+
+That’s perfect and exactly what we want:
+
+
+The condenser contactor coil is almost certainly 24 VAC and does not care about polarity.
+
+
+The KC868-A8S relay outputs are dry contacts. So wiring is simple:
+
+
+One side of the 24 VAC (R) → to one side of the contactor coil.
+
+
+The other side of the contactor coil → to the Y1/Y2 relay (on the A8S).
+
+
+The other side of that relay → back to the 24 VAC C (or R, depending on how you like to reference it—just keep consistent with the original wiring).
+
+
+
+
+Since it’s AC, there’s no concern about which way around the coil is wired; the relay is just “making or breaking” that 24 VAC.
+
+
+If you want to be extra nice to the contactor, you can add:
+
+
+An RC snubber or MOV across the coil (optional, but can reduce noise and relay pitting a bit).
+
+
+3. Reference / grounds
+Couple of small sanity checks:
+
+
+The KC868’s logic ground and your DS18B20 grounds all tie together (they must share a reference).
+
+
+Your thermostat’s DC 0 V does not have to share ground with the KC868 unless you’re directly sensing logic-level signals instead of using contact closures/relays between them.
+
+
+If you keep it to pure contacts, there’s no ground-sharing requirement on the thermostat side.
+
+
+
+
+4. Where we stand config-wise
+So with:
+
+
+Custom stat doing its own 5 V power
+
+
+A8S relays driving:
+
+
+Blower taps
+
+
+Pump
+
+
+EAC
+
+
+Humidifier
+
+
+Condenser contactor
+
+
+
+
+DS18B20s on GPIO14 for coil temps
+
+
+…the ESPHome config we’ve built should match your hardware just fine. The power/AC side isn’t fighting anything the YAML is expecting.
+If the next compile throws any new errors (likely just tiny syntax stuff), drop the error block and I’ll tweak the YAML to match exactly what your ESPHome version wants.
+
+
+----------------------- Q ----------------------
+1. the thermostat needs to be powered from the air handler
+
+----------------------- A ----------------------
+Thought for 15sGot it — so the stat does need its 24 VAC from the air handler’s transformer, not a separate supply. That’s totally workable with what we’ve built; we just need to be clear about the power + signaling paths.
+Let me lay it out in a concrete way.
+
+1. 24 VAC power from air handler → thermostat
+Assume the air handler still has its original 24 VAC transformer with R and C:
+
+
+Transformer secondary → RHWB board originally had R/C → now:
+
+
+R (hot leg)
+
+
+C (common leg)
+
+
+
+
+Wire your custom stat’s AC input like this:
+
+
+Thermostat AC+ (bridge input) → R
+
+
+Thermostat AC− (bridge input) → C
+
+
+Inside the thermostat:
+
+
+Full-wave bridge rectifies 24 VAC → ~34 V peak DC.
+
+
+LM2596T-5 drops that to regulated 5 V for the logic.
+
+
+So the thermostat is powered exactly like a normal one: it’s just running off the same R/C as the air handler transformer.
+Nothing in the ESPHome config changes for this — it’s purely wiring.
+
+2. KC868-A8S power
+Separately, the KC868-A8S itself wants 12 V DC on its power input.
+
+
+Feed the A8S board from a dedicated 12 V DC supply (or whatever Kincony spec says, typically 12 V).
+
+
+Do not try to power the A8S directly from the 24 VAC transformer; let that transformer stay in the low-voltage HVAC world (thermostat + contactor coils, humidifier, etc.).
+
+
+So you end up with:
+
+
+120 V → 24 VAC transformer → R/C → thermostat + contactor coils + humidifier/EAC as needed.
+
+
+120 V → 12 V DC PSU → KC868-A8S.
+
+
+Those two low-voltage systems are tied only where you intentionally join them (e.g., in the relay contacts or any shared reference you design).
+
+3. How the thermostat talks to the KC868
+Since your stat is powered from R/C, it now behaves like a “real” HVAC stat:
+
+
+When it calls for fan → it closes a path equivalent to R → G
+
+
+Cool stage 1 → R → Y1
+
+
+Cool stage 2 → R → Y2
+
+
+Heat → R → W
+
+
+You have two main options to get these calls into the KC868 inputs:
+Option A: Use little interface relays (nice and clean)
+Treat the thermostat outputs like they’re just 24 VAC signals driving small relay coils, and let the KC868 see dry contacts:
+For each call (G, Y1, Y2, W):
+
+
+24 VAC R → one side of a small relay coil (e.g., 24 VAC coil).
+
+
+Other side of that coil → thermostat’s output terminal (G/Y1/Y2/W).
+
+
+So when the stat energizes that output, it energizes the relay coil.
+
+
+
+
+Use the relay’s NO contact to bridge a KC868 input to its input common:
+
+
+Relay NO → INx on KC868
+
+
+Relay COM → KC868 input common (whatever you’ve tied as the input reference)
+
+
+
+
+This way:
+
+
+The KC868 inputs only ever see a contact closure, no 24 VAC directly.
+
+
+The 24 VAC stays on the HVAC side; isolation is good and noise is minimal.
+
+
+This matches the ESPHome config you already have: tstat_g, tstat_y1, tstat_y2, tstat_w are just “input went high” sensors, not 24 VAC “smart” readers.
+Option B: Make the thermostat outputs true “dry contacts”
+Since it’s your design, you could make the stat’s outputs be small onboard relays or optos themselves:
+
+
+Inside the thermostat, have each output drive a small relay/contact.
+
+
+Bring those dry contacts out to the KC868 A8S inputs directly:
+
+
+One side of each contact → KC868 input common
+
+
+Other side → IN1/IN2/IN3/IN4
+
+
+
+
+This avoids extra field relays, but the idea is the same: KC868 sees contact closures, not R/C directly.
+Either way, the key point is: powering the thermostat from R/C doesn’t fight the A8S or the ESPHome YAML at all. You just need an interface layer (relays/contacts) between the 24 VAC control world and the KC868’s logic inputs.
+
+4. Condenser contactor & other 24 VAC loads
+Since your condenser contactor coil is 24 VAC and polarity-agnostic:
+
+
+One side of coil → R
+
+
+Other side of coil → KC868 relay (say, Relay_Y1_OUT).
+
+
+Other side of that relay → C (or back to R, depending how you want to reference; just stay consistent with the original schematic).
+
+
+You do the same pattern for:
+
+
+Hydronic pump enable (if it uses a 24 VAC control input or a line-voltage relay coil).
+
+
+Humidifier.
+
+
+EAC.
+
+
+Our ESPHome config already assumes the KC868 relays are just dry contacts that you’ll insert into those 24 VAC control circuits.
+
+5. What (if anything) changes in ESPHome?
+For the “thermostat needs to be powered from the air handler” requirement:
+
+
+No YAML changes are required.
+
+
+We’re only changing how you wire R/C into the thermostat and how its outputs are interfaced to KC868 inputs.
+
+
+The only time we’d have to touch the YAML is if you decide you don’t want to use the thermostat’s G/Y/W/Y2 outputs at all and instead want the thermostat to talk directly to ESPHome (e.g., via MQTT/REST). Right now, you’ve explicitly gone down the “stat is a real HVAC stat, KC868 emulates OEM board” route, which is fine and keeps the YAML we wrote valid.
+
+If you want, I can sketch a text “wiring map” like:
+
+
+R/C to thermostat power
+
+
+R through relays to G/Y1/Y2/W contacts
+
+
+Those relay contacts to A8S IN1–IN4
+
+
+A8S relays to blower taps, pump, contactor, EAC, humidifier
+
+
+with labels matching your exact terminal names from the Rheem and the KC868, so you can almost wire it by numbers.
+
+----------------------- Q ----------------------
+Thermostat-sch.pdfPDFcould add 24 to 12v to run a8s. here is the schematic for the thermostat.
+
+----------------------- A ----------------------
+Thought for 39sYep, you can absolutely run the A8S off the same 24 VAC that’s feeding the thermostat – your schematic actually makes that pretty straightforward. 😄
+Let me tie your thermostat design + the A8S power together in a clean way.
+
+1. What your thermostat is doing now (power-wise)
+From the schematic:
+
+
+24 VAC comes in on J1 “RC+RH”. Thermostat-sch
+
+
+That goes into BR1 (MB6S) full-wave bridge, with big bulk cap C6 680 µF smoothing it.
+
+
+The rectified DC feeds U1 LM2596T-5, which outputs +5 V.
+
+
++5 V then feeds U2 AMS1117-3.3 to make 3.3 V for the ESP32-S3 module and sensors.
+
+
+Your HVAC outputs (HVAC_FAN, HVAC_COOL, HVAC_HEAT, HVAC_RVALV) drive UC2-3NJ relays K1–K4 via 2N7002 MOSFETs Q1–Q4, and those relay coils are powered from that +5 V rail. Thermostat-sch
+
+
+So right now:
+
+
+24 VAC → bridge → LM2596-5 → 5 V
+
+
+5 V → AMS1117 → 3.3 V
+
+
+ESP32 + relays + sensors all live on that 5 V/3.3 V domain.
+
+
+Good news: the thermostat isn’t using 24 VAC directly for anything but feeding the rectifier, so adding another 24 → 12 supply in parallel is totally fine.
+
+2. Adding 24 VAC → 12 V DC for the KC868-A8S
+The A8S wants 12 V DC on its power input. Easiest / cleanest way to get that from your existing transformer:
+Hardware block diagram
+From the same 24 VAC secondary that goes to J1:
+
+
+24 VAC → your thermostat BR1 + LM2596-5 → 5 V / 3.3 V (unchanged)
+
+
+24 VAC → new 24 VAC → 12 V DC module → KC868-A8S 12 V input
+
+
+So wiring:
+
+
+Transformer secondary:
+
+
+One leg → R → goes to thermostat J1 RC/RH and to the AC input of the new 24→12 module
+
+
+Other leg → C → goes to thermostat J1 C and to the other AC input of the 24→12 module
+
+
+
+
+24→12 module DC output:
+
+
++12 V → A8S 12V+
+
+
+0 V → A8S GND
+
+
+
+
+That’s it. The thermostat continues to use its own bridge + buck; the A8S gets its own separate buck.
+As long as your air-handler transformer has enough VA (most are 30–40 VA), it’s totally reasonable to power:
+
+
+Thermostat electronics (few watts at most)
+
+
+A8S logic + relay coils
+
+
+24 VAC loads like the condenser contactor, humidifier valve, etc.
+
+
+If you want to be conservative, assume the A8S might pull up to ~0.5–0.7 A at 12 V with multiple relays energized, which is ~6–8 W (~0.3 A at 24 VAC). That’s still fine on a 40 VA transformer.
+
+3. Grounding / references
+Because the new 24→12 module sits on the same 24 VAC secondary:
+
+
+Its DC 0 V will be referenced to that secondary (through the module’s internal rectifier).
+
+
+Your thermostat’s DC ground is also referenced to that same secondary via BR1.
+
+
+That’s good:
+
+
+It means if you ever want to share logic signals between thermostat and A8S, they have a reasonable reference.
+
+
+All relay contacts from the thermostat (K1–K4) can be used as dry contacts into A8S inputs without weird floating levels, as long as you wire them that way.
+
+
+You still keep the 24 VAC itself off the A8S inputs; only use the thermostat relay contacts or separate little relays/optos to drive A8S inputs.
+
+4. Nice extra: use the DPDT relays on the thermostat
+Each UC2-3NJ relay (K1–K4) is DPDT – two independent contact sets per output. Thermostat-sch
+You can use that to your advantage:
+
+
+One pole: do the “classic” R→G / R→Y / R→W switching to drive 24 VAC loads (fan relay, condenser contactor, etc.).
+
+
+Second pole: feed the KC868-A8S input side as a dry contact:
+
+
+A8S input common → COM2
+
+
+A8S INx → NO2
+
+
+
+
+So each time your thermostat calls fan/heat/cool, you get:
+
+
+24 VAC switched for the real HVAC load via one pole.
+
+
+A nice isolated “call present” contact closed into the A8S via the other pole.
+
+
+That matches perfectly with the ESPHome config where we have:
+
+
+tstat_g on IN1
+
+
+tstat_y1 on IN2
+
+
+tstat_y2 on IN3
+
+
+tstat_w on IN4
+
+
+No 24 VAC touches the A8S input circuitry; it just sees contact closures from the thermostat relays.
+
+5. Big picture
+With this setup:
+
+
+Thermostat:
+
+
+Powered from R/C (24 VAC) via its LM2596T-5 + AMS1117-3.3 as designed. Thermostat-sch
+
+
+Drives HVAC loads and simultaneously sends dry contacts to A8S.
+
+
+
+
+KC868-A8S:
+
+
+Powered from the same 24 VAC transformer via a 24→12 V DC module.
+
+
+Uses its relays to switch:
+
+
+Blower taps
+
+
+Hydronic pump enable
+
+
+Condenser contactor
+
+
+EAC
+
+
+Humidifier
+
+
+
+
+
+
+Power:
+
+
+One transformer in the air handler does everything.
+
+
+No extra wall wart / random 12 V brick needed.
+
+
+
+
+If you want, I can sketch a “netlist-style” wiring table next: transformer → thermostat J1 pins, transformer → 24→12 module, module → A8S power, and per-relay mapping from thermostat K1–K4 contacts into A8S IN1–IN4 so you can wire it almost mechanically.
+Sources
+
+----------------------- Q ----------------------
+have this power supply to convert 24 to 12. https://www.amazon.com/dp/B094ZTG5S8?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1
+
+----------------------- A ----------------------
+Thought for 16sYep, that module will work for what you want 👍
+That Amazon link (B094ZTG5S8) is the UMLIFE AC/DC → DC buck with LM2596HV:
+
+
+Input: AC 5–30 V or DC 5–48 V amazon.com+1
+
+
+Output: Adjustable 2.5–35 V DC, up to about 2 A (realistically ~1.5–2 A continuous).
+
+
+So your 24 VAC from the air handler transformer → this module → ~12 V DC → KC868-A8S is exactly what it’s meant for.
+
+How to wire it in this system
+1. Input side (24 VAC)
+From the air handler’s 24 V transformer:
+
+
+One leg (R) → PSU AC~ input 1
+
+
+Other leg (C) → PSU AC~ input 2
+
+
+The module already has a bridge on it (it’s rated for AC input), so no polarity worries on the AC side. amazon.com+1
+Leave your thermostat still powered from R/C as before; you’re just hanging this buck module in parallel with it on the same 24 VAC secondary.
+2. Output side (to A8S)
+
+
+PSU +Vout → KC868-A8S 12V+
+
+
+PSU GND / –Vout → KC868-A8S GND / 12V–
+
+
+Before you hook it to the A8S:
+
+
+Power the module from 24 VAC.
+
+
+Put a meter on the output.
+
+
+Adjust the little trim pot until you get 12.0–12.5 V.
+
+
+Only then connect it to the A8S power terminals.
+
+
+
+Is 2 A enough for the KC868-A8S?
+Short version: yes, for what you’re doing.
+Rough envelope:
+
+
+ESP32 + logic: ~0.1–0.3 A at 12 V
+
+
+Each relay coil: typically 30–70 mA @ 12 V → 8 relays all on = maybe 0.25–0.6 A
+
+
+So worst case you’re usually under 1 A, maybe ~1.2 A with Wi-Fi peaks and all relays hammered.
+
+
+That’s still comfortably below the module’s 2 A rating. Just:
+
+
+Give the module a little airflow (don’t bury it in insulation).
+
+
+Don’t run it at crazy high ambient temps right next to the hydronic coil.
+
+
+If you ever got into a situation where all A8S relays are on plus you’re feeding some extra 12 V loads, then I’d think about a beefier module; but for just powering the A8S itself, this one is fine.
+
+Big picture with your thermostat
+With this in place you’ll have:
+
+
+24 VAC transformer:
+
+
+Powers your thermostat (via its bridge + LM2596T-5 in your schematic).
+
+
+Feeds the 24→12 buck module for the A8S.
+
+
+Still handles 24 VAC loads (contactor, humidifier valve, etc.) that the A8S relays are switching.
+
+
+
+
+KC868-A8S:
+
+
+Gets a clean 12 V from this module.
+
+
+Its relays switch blower taps, pump enable, condenser contactor, EAC, humidifier exactly as per our ESPHome config.
+
+
+
+
+So yes: that Amazon converter is a good fit here. If you want, next step I can lay out a little “wiring table” that explicitly ties:
+
+
+Transformer → thermostat → converter → A8S
+
+
+Thermostat relay contacts (K1–K4) → A8S IN1–IN4
+
+
+so you can literally wire it by row.
+Sources
+
+----------------------- Q ----------------------
+provide a complete wiring diagram
+
+----------------------- A ----------------------
+Image created
+
+----------------------- Q ----------------------
+that was a very poor diagram. lets just stick to text connections. provide a complete list of all connections between the power supplys, thermostat, kc868-a8s and the ac relay. 
+
+----------------------- A ----------------------
+Perfect — let’s go pure text and make it explicit, wire-by-wire, so you can build and check it mechanically.
+This list assumes your setup as discussed:
+
+
+Air handler transformer provides 24 VAC (R & C)
+
+
+Thermostat uses LM2596T-5 + bridge as per your schematic
+
+
+KC868-A8S runs from 12 V DC
+
+
+AC relay/contactor coil is 24 VAC
+
+
+Amazon 24 → 12 V converter powers the A8S
+
+
+
+🔌 POWER DISTRIBUTION
+SourceDestinationNotesTransformer secondary leg 1 → R→ Thermostat J1 RC/RH24 VAC hot feed to thermostat bridgeTransformer secondary leg 2 → C→ Thermostat J1 C24 VAC returnTransformer secondary leg 1 (R)→ 24 → 12 V converter AC ~1One input terminalTransformer secondary leg 2 (C)→ 24 → 12 V converter AC ~2Other input terminalConverter +Vout (12 V DC)→ KC868-A8S 12V +Main DC feedConverter –Vout (GND)→ KC868-A8S GND / 12V–DC return
+(Both converter and thermostat share the same 24 VAC secondary but are isolated through their own bridges.)
+
+🎛️ THERMOSTAT SIGNAL OUTPUTS → KC868 INPUTS
+Each relay on the thermostat (K1–K4) is DPDT; we’ll use one pole for 24 VAC switching and the other as a dry-contact signal into the A8S.
+Thermostat relayHVAC function24 VAC side (primary contacts)KC868 input (secondary contacts)K1FAN (G)COM1 → R, NO1 → blower control relay coilCOM2 → KC868 input common, NO2 → IN1K2COOL Stage 1 (Y1)COM1 → R, NO1 → condenser contactor coilCOM2 → KC868 input common, NO2 → IN2K3COOL Stage 2 (Y2) (if used)COM1 → R, NO1 → 2nd-stage contactor or blower tapCOM2 → input common, NO2 → IN3K4HEAT (W)COM1 → R, NO1 → hydronic pump enable relay coilCOM2 → input common, NO2 → IN4
+So:
+
+
+KC868 IN1–IN4 = G, Y1, Y2, W calls
+
+
+KC868 input common = all relay COM2’s tied together
+
+
+
+⚙️ KC868-A8S OUTPUT RELAYS → HVAC LOADS
+KC868 RelayFunctionConnected Load / CircuitRelay 1Blower LowFan motor low-speed tapRelay 2Blower Med-LowFan motor med-low tapRelay 3Blower Med-HighFan motor med-high tapRelay 4Blower HighFan motor high-speed tapRelay 5Hydronic Pump Enable24 VAC or 120 VAC relay coil controlling pumpRelay 6Electronic Air Cleaner (EAC)EAC 24 VAC enable circuitRelay 7Humidifier24 VAC humidifier solenoid or control relayRelay 8Spare / FutureOptional 2nd-stage or diagnostics
+Each relay is dry-contact:
+
+
+One side of each relay’s COM → 24 VAC R (hot)
+
+
+That relay’s NO → target coil terminal (blower relay, contactor, etc.)
+
+
+The other coil terminal → 24 VAC C
+
+
+
+🧊 CONDENSER CONTACTOR
+ConnectionDescription24 VAC R → KC868 Relay (Y1) COMHot feedKC868 Relay (Y1) NO → Contactor Coil Terminal 1Switched 24 VACContactor Coil Terminal 2 → 24 VAC CReturn
+
+🌡️ DS18B20 TEMPERATURE SENSORS
+SignalConnectionDS18B20 DQKC868 GPIO14DS18B20 VCCKC868 3.3 V or 5 V (pin header V+)DS18B20 GNDKC868 GND4.7 kΩ pull-upBetween DQ and VCC
+Both “Heat Coil Temp” and “Cool Coil Temp” share that same one-wire bus.
+
+✅ SUMMARY
+Transformer (24 VAC)
+→ powers thermostat + 24→12 module.
+24→12 module
+→ powers KC868-A8S (12 V DC).
+Thermostat
+→ has DPDT relays driving 24 VAC loads and dry contacts into A8S IN1–IN4.
+KC868-A8S relays
+→ control blower speeds, pump, condenser contactor, EAC, and humidifier via 24 VAC hot switching.
+Sensors
+→ DS18B20s on GPIO14 monitor coil temps.
+
+Would you like me to expand this into a terminal-by-terminal pinout table (e.g., “KC868 IN1 → Thermostat K1-NO2”, “KC868 Relay 1-COM → R” style)? That would give you a literal screw-terminal wiring list to hand a tech.
+
+----------------------- Q ----------------------
+yes
+
+----------------------- A ----------------------
+Thought for 16sGot it. Let’s turn this into something you can literally hand to a tech and wire by numbers.
+I’ll assume:
+
+
+One 24 VAC transformer in the air handler (R & C).
+
+
+Your thermostat J1 header matches your schematic (RC/RH, C, W, Y, G, etc.).
+
+
+KC868-A8S has:
+
+
+Power: 12V+, GND
+
+
+Inputs: IN1–IN8 plus an input common (COM/GND)
+
+
+Relays: R1–R8, each with COM and NO we will use.
+
+
+
+
+The 24→12 V module is that UMLIFE AC-to-DC board.
+
+
+Condenser contactor, pump relay coil, EAC, humidifier are all 24 VAC coils (or controlled via 24 VAC relay coils).
+
+
+If a label on your actual hardware differs slightly, treat this as the wiring intent and adjust names.
+
+1. 24 VAC → Thermostat + 24→12 V Converter
+From deviceFrom terminalTo deviceTo terminalPurpose24 VAC transformerR (hot)ThermostatJ1 RC/RHPowers thermostat bridge/LM259624 VAC transformerC (common)ThermostatJ1 CReturn for thermostat power24 VAC transformerR24→12 V converterAC~ 1AC input leg 124 VAC transformerC24→12 V converterAC~ 2AC input leg 2
+
+2. 24→12 V Converter → KC868-A8S Power
+(Adjust output to 12–12.5 V before connecting)
+From deviceFrom terminalTo deviceTo terminalPurpose24→12 V converter+Vout (12 V)KC868-A8S12V+Main DC supply to A8S24→12 V converter–Vout (GND)KC868-A8SGND / 12V–DC return
+
+3. Thermostat Relays → KC868-A8S Inputs
+Using second pole of each DPDT relay as a dry contact into the A8S.
+First choose / create a KC868 input common:
+
+
+On the A8S, find the terminal labelled something like IN-COM / GND / COM for the inputs.
+
+
+We’ll call it IN-COM here.
+
+
+3.1 Common reference
+From deviceFrom terminalTo deviceTo terminalPurposeKC868-A8SIN-COMThermostatK1 COM2 / K2 COM2 / K3 COM2 / K4 COM2 (all tied)Common side of all “signal” contacts
+(Practically: daisy-chain IN-COM to COM2 of K1, K2, K3, K4.)
+3.2 Individual calls → IN1–IN4
+FunctionFrom deviceFrom terminalTo deviceTo terminalFan (G)ThermostatK1 NO2 (2nd pole NO)KC868-A8SIN1Cool Stage 1 (Y1)ThermostatK2 NO2KC868-A8SIN2Cool Stage 2 (Y2)ThermostatK3 NO2KC868-A8SIN3Heat (W)ThermostatK4 NO2KC868-A8SIN4
+Result: when the thermostat energizes a relay, its first pole handles 24 VAC to the actual HVAC circuit; its second pole simply closes IN-COM → INx so ESPHome sees the call.
+
+4. KC868-A8S Relay Outputs → HVAC Loads
+Each A8S relay has COM and NO (and maybe NC; we ignore NC).
+For all 24 VAC loads, we use the same pattern:
+
+Transformer R → A8S Relay COM → A8S Relay NO → load coil → transformer C
+
+4.1 Blower motor taps
+You’ll have a separate fan-contact relay or directly feed the blower taps depending on how you’re doing it. Here’s the logical mapping:
+A8S RelayFunctionFrom deviceFrom terminalTo deviceTo terminalRelay 1 (R1)Blower Low24 VAC transformerRA8S Relay 1COMA8S Relay 1NOBlower motorLow-speed tapRelay 2 (R2)Blower Med-Low24 VAC transformerR (shared or separate)A8S Relay 2COMA8S Relay 2NOBlower motorMed-low tapRelay 3 (R3)Blower Med-High24 VAC transformerRA8S Relay 3COMA8S Relay 3NOBlower motorMed-high tapRelay 4 (R4)Blower High24 VAC transformerRA8S Relay 4COMA8S Relay 4NOBlower motorHigh-speed tap
+Blower neutral/common from motor → back to line neutral as appropriate (120 V side) or fan-center tap if it’s all 24 VAC relays upstream.
+4.2 Hydronic pump enable
+If the pump has a 24 VAC enable or you’re driving a 24 VAC relay coil that switches the pump power:
+From deviceFrom terminalTo deviceTo terminal24 VAC transformerRA8S Relay 5COMA8S Relay 5NOPump control relay / pump enable coilCoil terminal 1Pump control relay / pump enableCoil terminal 224 VAC transformerC
+4.3 Condenser contactor (AC relay)
+From deviceFrom terminalTo deviceTo terminal24 VAC transformerRA8S Relay 6 (or whichever you pick for Y1 out)COMA8S that relay (e.g. R6)NOCondenser contactorCoil terminal 1Condenser contactorCoil terminal 224 VAC transformerC
+(If you want to keep Y1 specifically on one relay, just stick with the relay number you mapped in ESPHome.)
+4.4 Electronic Air Cleaner (EAC)
+From deviceFrom terminalTo deviceTo terminal24 VAC transformerRA8S Relay 7COMA8S Relay 7NOEAC24 V hot inputEAC24 V common24 VAC transformerC
+4.5 Humidifier
+From deviceFrom terminalTo deviceTo terminal24 VAC transformerRA8S Relay 8COMA8S Relay 8NOHumidifier valve / relayCoil terminal 1HumidifierCoil terminal 224 VAC transformerC
+(If you’d rather use a different relay mapping than I picked in the YAML, you can shuffle functions among R5–R8 as long as you also adjust ESPHome.)
+
+5. DS18B20 Temperature Sensors → KC868-A8S
+Assuming you’re using a 3-pin header on the A8S for 3.3 V / GND / GPIO14:
+From deviceFrom terminalTo deviceTo terminalPurposeA8S3.3 V (or 5 V per your choice)Both DS18B20sVCCSensor powerA8SGNDBoth DS18B20sGNDSensor groundA8SGPIO14Both DS18B20sDQOne-wire data line4.7 kΩ resistorOne end → DQOther end → VCCPull-up on data line
+
+If you want, next I can:
+
+
+Re-label the A8S relays/inputs in the YAML to exactly match the relay numbers I used in this table, so the code and wiring diagram are 1:1.
+
+
+
+
+----------------------- Q ----------------------
+yes but here is the yaml file with any updates.
+
+esphome:
+  name: kc868-a8s-airhandler
+  friendly_name: "KC868 A8S Air Handler"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "M9eVl5jPP4aV7Yz8kcbQxOV3e1xR+guL44zKrHflb/o="
+
+ota:
+  - platform: esphome
+    password: "3133fd511af009181b181720dc33a697"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Test Fallback Hotspot"
+    password: "D8yaLuZ9S5fd"
+
+captive_portal:
+
+# --- Time (for 3am pump exercise + 24h tracking) ---
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Chicago"
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 3
+        then:
+          - script.execute: pump_exercise_if_needed
+
+# --- Globals ---
+globals:
+  # Unix timestamp of last time HEAT (W) was actually called
+  - id: last_heat_timestamp
+    type: long
+    restore_value: yes
+    initial_value: '0'
+
+  # True while we are in the "heat off delay" window
+  - id: extend_heat
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # True while we are in the "cool off delay" window
+  - id: extend_cool
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Whether the blower is allowed to run in heat mode
+  # (for Heating On Delay / coil warm-up)
+  - id: heat_fan_allowed
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# --- I2C + PCF8574 hubs (A8/A8S standard) ---
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+  id: bus_a
+
+pcf8574:
+  - id: pcf_out
+    address: 0x24  # relays 1-8
+  - id: pcf_in
+    address: 0x22  # inputs 1-8
+
+one_wire:
+  - platform: gpio
+    id: onewire_bus
+    pin: GPIO14
+
+# ============================================================
+#  THERMOSTAT INPUTS + FLOW SWITCH
+# ============================================================
+
+binary_sensor:
+  # G - Fan call
+  - platform: gpio
+    name: "Tstat G (Fan Call)"
+    id: tstat_g
+    pin:
+      pcf8574: pcf_in
+      number: 0
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y1 - Cool stage 1
+  - platform: gpio
+    name: "Tstat Y1 (Cool Stage 1)"
+    id: tstat_y1
+    pin:
+      pcf8574: pcf_in
+      number: 1
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Handle potential cooling off delay
+        - script.execute: cooling_off_delay
+        - script.execute: update_hvac
+
+  # Y2 - Cool stage 2
+  - platform: gpio
+    name: "Tstat Y2 (Cool Stage 2)"
+    id: tstat_y2
+    pin:
+      pcf8574: pcf_in
+      number: 2
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Handle potential cooling off delay
+        - script.execute: cooling_off_delay
+        - script.execute: update_hvac
+
+  # W - Hydronic heat (with ON delay & OFF delay)
+  - platform: gpio
+    name: "Tstat W (Heat)"
+    id: tstat_w
+    pin:
+      pcf8574: pcf_in
+      number: 3
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        # New heat call: cancel any previous off-delay and reset fan permission
+        - lambda: |-
+            id(extend_heat) = false;
+            id(heat_fan_allowed) = false;
+        # Turn pump on immediately and evaluate logic
+        - script.execute: update_hvac
+        # Start heating ON delay (coil warm-up)
+        - script.execute: heating_on_delay
+    on_release:
+      then:
+        # Start heat OFF delay based on Heating Off Delay setting
+        - script.execute: heat_off_delay
+
+  # Flow Switch FS (optional, for open-loop)
+  # Wire so that "active flow" = ON state; adjust inverted: if needed.
+  - platform: gpio
+    name: "Flow Switch FS"
+    id: flow_switch_fs
+    pin:
+      pcf8574: pcf_in
+      number: 4
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Spares
+  - platform: gpio
+    name: "Spare IN6"
+    id: spare_in6
+    pin:
+      pcf8574: pcf_in
+      number: 5
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN7"
+    id: spare_in7
+    pin:
+      pcf8574: pcf_in
+      number: 6
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN8"
+    id: spare_in8
+    pin:
+      pcf8574: pcf_in
+      number: 7
+      mode: INPUT
+      inverted: true
+
+# ============================================================
+#  SWITCHES: TEMPLATE OPTIONS + RELAY OUTPUTS
+# ============================================================
+
+switch:
+  # --- Template switches (options) ---
+
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # --- Physical relays on KC868-A8S ---
+
+  # Blower speeds
+  - platform: gpio
+    name: "Blower Speed Low"
+    id: blower_low
+    pin:
+      pcf8574: pcf_out
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-Low"
+    id: blower_medlow
+    pin:
+      pcf8574: pcf_out
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-High"
+    id: blower_medhigh
+    pin:
+      pcf8574: pcf_out
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed High"
+    id: blower_high
+    pin:
+      pcf8574: pcf_out
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: pcf_out
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Electronic Air Cleaner
+  - platform: gpio
+    name: "Electronic Air Cleaner"
+    id: eac_relay
+    pin:
+      pcf8574: pcf_out
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Humidifier
+  - platform: gpio
+    name: "Humidifier Relay"
+    id: humidifier_relay
+    pin:
+      pcf8574: pcf_out
+      number: 6
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Spare relay
+  - platform: gpio
+    name: "Spare Relay 8"
+    id: spare_relay8
+    pin:
+      pcf8574: pcf_out
+      number: 7
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ============================================================
+#  USER SETTINGS (DIP-switch-like + speeds + accessory behavior)
+# ============================================================
+
+select:
+  # AC configuration (DIP-style)
+  - platform: template
+    name: "AC Configuration"
+    id: ac_configuration
+    optimistic: true
+    options:
+      - "Single-Stage A/C"
+      - "Two-Stage A/C"
+    initial_option: "Two-Stage A/C"
+
+number:
+  # Heating OFF delay in seconds
+  - platform: template
+    name: "Heating Off Delay (sec)"
+    id: heating_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Cooling OFF delay in seconds
+  - platform: template
+    name: "Cooling Off Delay (sec)"
+    id: cooling_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Heating ON delay in seconds (coil warm-up before blower)
+  - platform: template
+    name: "Heating On Delay (sec)"
+    id: heating_on_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 5
+    initial_value: 0
+
+  # Blower speed mapping 1..4 -> low..high
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+  # EAC/Humidifier enable flags (0/1)
+  - platform: template
+    name: "Enable EAC on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+  - platform: template
+    name: "Enable Humidifier on Heat"
+    id: enable_humid_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+# ============================================================
+#  SCRIPTS: main HVAC logic + delays + pump exercise
+# ============================================================
+
+script:
+  # Main logic: choose mode, blower speed, pump, EAC, humidifier
+  - id: update_hvac
+    mode: single
+    then:
+      - lambda: |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1_raw = id(tstat_y1).state;
+          const bool call_y2_raw = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend_h    = id(extend_heat);
+          const bool cool_hold   = id(extend_cool);
+
+          const bool two_stage_ac = (id(ac_configuration).state == "Two-Stage A/C");
+          const bool call_y2 = two_stage_ac ? call_y2_raw : false;
+          const bool call_y1 = call_y1_raw;
+
+          // Flow switch usage
+          const bool fs_used = id(use_flow_switch_fs).state;
+          const bool fs_ok   = (!fs_used) || id(flow_switch_fs).state;
+
+          bool call_g = call_g_raw;
+
+          // Heat request including off-delay extension
+          bool call_w_effective = call_w_raw || extend_h;
+
+          // For blower & "heat mode", only allow if FS is OK (when used)
+          const bool heat_allowed = call_w_effective && fs_ok;
+
+          // Track "real" thermostat heat calls for last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+
+          // Turn everything OFF first (only one speed at a time)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+
+          // Pump and accessories off by default
+          id(hydronic_pump).turn_off();
+          id(eac_relay).turn_off();
+          id(humidifier_relay).turn_off();
+
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          // Determine if we are in cooling off-delay "hold"
+          bool cool_off_hold = false;
+          if (cool_hold &&
+              !call_w_effective && !call_y1 && !call_y2 && !call_g) {
+            cool_off_hold = true;
+          }
+
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
+          if (heat_allowed) {
+            // Pump always runs during heat call (incl. off-delay)
+            id(hydronic_pump).turn_on();
+
+            // Respect Heating On Delay for the blower
+            if (id(heat_fan_allowed)) {
+              speed = (int) id(heat_speed).state;
+            } else {
+              speed = 0;  // Pump only, no blower yet
+            }
+
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (cool_off_hold) {
+            // Cooling off-delay: fan-only at stage-1 speed
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (call_g) {
+            // Fan-only: use cool stage 1 speed
+            speed = (int) id(cool_stage1_speed).state;
+          }
+
+          // If we have a heat call but FS is enabled and NOT OK,
+          // run the pump to try to establish flow, but DO NOT run the blower.
+          if (call_w_effective && fs_used && !fs_ok) {
+            id(hydronic_pump).turn_on();
+            // If fan was allowed, override speed to 0 until FS_OK
+            speed = 0;
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              break;  // blower off
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // EAC behavior: basically "blower on" logic with per-mode enables
+          bool eac_should_run = false;
+          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+            eac_should_run = true;
+          }
+          if ((call_y1 || call_y2 || cool_off_hold) &&
+              ((int)id(enable_eac_on_cool).state == 1)) {
+            eac_should_run = true;
+          }
+          if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            eac_should_run = true;
+          }
+
+          if (blower_on && eac_should_run) {
+            id(eac_relay).turn_on();
+          }
+
+          // Humidifier behavior: heat-only, blower must be on
+          if (blower_on && heat_allowed &&
+              ((int)id(enable_humid_on_heat).state == 1)) {
+            id(humidifier_relay).turn_on();
+          }
+
+          // If no effective heat call anymore, clear heat_fan_allowed so next cycle warms again
+          if (!call_w_effective && !call_w_raw) {
+            id(heat_fan_allowed) = false;
+          }
+
+  # Heating OFF delay (uses Heating Off Delay (sec))
+  - id: heat_off_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (int) id(heating_off_delay_sec).state > 0;
+          then:
+            - lambda: |-
+                id(extend_heat) = true;
+            - delay: !lambda "return (int) id(heating_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+
+  # Heating ON delay (coil warm-up before blower)
+  - id: heating_on_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (int) id(heating_on_delay_sec).state > 0;
+          then:
+            - delay: !lambda "return (int) id(heating_on_delay_sec).state * 1000;"
+            - lambda: |-
+                // Only allow fan if heat call is still active (W or off-delay)
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+
+  # Cooling OFF delay (blower run-on after cooling)
+  - id: cooling_off_delay
+    mode: restart
+    then:
+      - lambda: |-
+          const int delay_s = (int) id(cooling_off_delay_sec).state;
+          // If delay is disabled, ensure we clear and exit
+          if (delay_s <= 0) {
+            id(extend_cool) = false;
+            return;
+          }
+          // Only start cool-off hold if no other calls are active
+          if (id(tstat_w).state || id(tstat_y1).state ||
+              id(tstat_y2).state || id(tstat_g).state) {
+            id(extend_cool) = false;
+            return;
+          }
+          id(extend_cool) = true;
+      - if:
+          condition:
+            lambda: |-
+              return id(extend_cool);
+          then:
+            - delay: !lambda "return (int) id(cooling_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_cool) = false;
+            - script.execute: update_hvac
+
+  # Check if pump exercise is needed at 3am
+  - id: pump_exercise_if_needed
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(enable_pump_exercise).state) {
+            return;
+          }
+          if (!id(sntp_time).now().is_valid()) {
+            return;
+          }
+
+          if (id(tstat_w).state) {
+            return;
+          }
+
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts  = id(last_heat_timestamp);
+          const long diff     = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+
+          if (diff >= 24L * 60L * 60L) {
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          }
+
+  # Actually run the pump exercise (default 6 minutes)
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 6min
+      - if:
+          condition:
+            binary_sensor.is_on: tstat_w
+          then:
+            - script.execute: update_hvac
+          else:
+            - switch.turn_off: hydronic_pump
+
+# ============================================================
+#  STATUS TEXT SENSORS
+# ============================================================
+
+text_sensor:
+  - platform: template
+    name: "Air Handler Mode"
+    id: air_handler_mode
+    lambda: |-
+      if (id(tstat_w).state || id(extend_heat)) {
+        if (id(use_flow_switch_fs).state && !id(flow_switch_fs).state) {
+          return {"HEAT_WAIT_FS"};
+        } else {
+          return {"HEAT"};
+        }
+      } else if (id(tstat_y2).state &&
+                 (id(ac_configuration).state == "Two-Stage A/C")) {
+        return {"COOL_STAGE_2"};
+      } else if (id(tstat_y1).state) {
+        return {"COOL_STAGE_1"};
+      } else if (id(extend_cool)) {
+        return {"COOL_OFF_DELAY"};
+      } else if (id(tstat_g).state) {
+        return {"FAN_ONLY"};
+      } else {
+        return {"IDLE"};
+      }
+
+  - platform: template
+    name: "Blower Speed Selected"
+    id: blower_speed_label
+    lambda: |-
+      if (id(blower_low).state)        return {"LOW"};
+      if (id(blower_medlow).state)     return {"MED_LOW"};
+      if (id(blower_medhigh).state)    return {"MED_HIGH"};
+      if (id(blower_high).state)       return {"HIGH"};
+      return {"OFF"};
+
+sensor:
+  # Heat coil temperature sensor (DS18B20 #1)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x0000000000000000  # <-- REPLACE with real address
+    name: "Heat Coil Temp"
+    id: heat_coil_temp
+    update_interval: 30s
+
+  # Cool coil temperature sensor (DS18B20 #2)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x1111111111111111  # <-- REPLACE with real address
+    name: "Cool Coil Temp"
+    id: cool_coil_temp
+    update_interval: 30s
+
+----------------------- A ----------------------
+Thought for 30sNice, thanks for dropping the full YAML. I’ll line the wiring up exactly with what that config expects and give you a terminal-by-terminal list you can literally wire from.
+I’ll break this into:
+
+
+Power distribution
+
+
+Thermostat → KC868 inputs (G/Y1/Y2/W)
+
+
+Flow switch (FS) → KC868
+
+
+AC relay (condenser contactor) wiring
+
+
+KC868 relays → “big stuff” (pump/EAC/humidifier, blower taps)
+
+
+DS18B20 sensors
+
+
+I’ll assume these names:
+
+
+Transformer: 24 VAC secondary → terminals R (hot) and C (common).
+
+
+KC868-A8S:
+
+
+Power: 12V+, GND
+
+
+Inputs: IN1…IN8 plus IN-COM (common input reference)
+
+
+Relays: R1…R8, each with COM and NO
+
+
+
+
+Thermostat: your board with J1 (RC/RH, C, W, Y, G, …) and four DPDT relays K1–K4.
+
+
+Your YAML maps things like this:
+
+
+Inputs:
+
+
+IN1 → tstat_g (G)
+
+
+IN2 → tstat_y1 (Y1)
+
+
+IN3 → tstat_y2 (Y2)
+
+
+IN4 → tstat_w (W)
+
+
+IN5 → flow_switch_fs
+
+
+
+
+Relays (pcf_out numbers):
+
+
+R1 → blower_low
+
+
+R2 → blower_medlow
+
+
+R3 → blower_medhigh
+
+
+R4 → blower_high
+
+
+R5 → hydronic_pump
+
+
+R6 → eac_relay
+
+
+R7 → humidifier_relay
+
+
+R8 → spare
+
+
+
+
+
+1. 24 VAC transformer → thermostat + 24→12 V module
+Goal: One transformer feeds both your thermostat and the 24→12 module (which powers the KC868).
+Transformer → Thermostat
+From deviceFrom terminalTo deviceTo terminalPurposeTransformerRThermostatJ1 RC/RH24 VAC hot into thermostat bridgeTransformerCThermostatJ1 C24 VAC common
+Transformer → 24→12 V converter (UMLIFE module)
+From deviceFrom terminalTo deviceTo terminalTransformerR24→12 V moduleAC~ 1TransformerC24→12 V moduleAC~ 2
+(Those AC~ terminals are non-polar; either leg can go to either AC~ pad.)
+
+2. 24→12 V converter → KC868-A8S power
+After you’ve adjusted the converter’s output to about 12–12.5 V DC with a meter:
+From deviceFrom terminalTo deviceTo terminalPurpose24→12 V module+Vout (12 V)KC868-A8S12V+Main 12 V supply24→12 V module–Vout (GND)KC868-A8SGND / 12V–DC return
+That’s all the power for the A8S.
+
+3. Thermostat relays → KC868 inputs (G, Y1, Y2, W)
+Each thermostat output relay (K1–K4) is DPDT. We’ll use:
+
+
+First pole (COM1/NO1) to actually switch 24 VAC for HVAC loads (blower/contactor/pump/etc.)
+
+
+Second pole (COM2/NO2) as a dry contact into the KC868 inputs.
+
+
+3.1 Input common
+Pick the KC868’s input common terminal (often labeled something like IN-COM, GND IN, or similar). We’ll call it IN-COM here.
+Daisy-chain that to all the thermostat relay COM2s:
+From deviceFrom terminalTo deviceTo terminalPurposeKC868-A8SIN-COMThermostatK1 COM2Common reference for G inputKC868-A8SIN-COMThermostatK2 COM2(jumper from K1 COM2)KC868-A8SIN-COMThermostatK3 COM2(jumper from K2 COM2)KC868-A8SIN-COMThermostatK4 COM2(jumper from K3 COM2)
+(Practically: run one wire from IN-COM to K1 COM2, then short COM2 from K1→K2→K3→K4.)
+3.2 Individual calls into IN1–IN4
+Mapping per your YAML:
+
+
+IN1 → tstat_g (G)
+
+
+IN2 → tstat_y1 (Y1)
+
+
+IN3 → tstat_y2 (Y2)
+
+
+IN4 → tstat_w (W)
+
+
+Connections:
+FunctionFrom deviceFrom terminalTo deviceTo terminalFan (G) → IN1ThermostatK1 NO2KC868-A8SIN1Cool Stage 1 (Y1) → IN2ThermostatK2 NO2KC868-A8SIN2Cool Stage 2 (Y2) → IN3ThermostatK3 NO2KC868-A8SIN3Heat (W) → IN4ThermostatK4 NO2KC868-A8SIN4
+So when your thermostat energizes K1/K2/K3/K4, the second pole simply closes IN-COM → INx, which is exactly what those binary_sensor inputs in your YAML are watching.
+
+4. Flow switch (FS) → KC868 IN5
+Your YAML treats FS as a dry contact input (flow_switch_fs on pcf_in #4 / IN5 logically), not a 24 VAC device, so wire it as a simple switch.
+From deviceFrom terminalTo deviceTo terminalFlow switchContact 1KC868-A8SIN-COMFlow switchContact 2KC868-A8SIN5 (pcf_in #4)
+No 24 VAC through FS in this scheme; KC868 just sees open/closed.
+
+5. AC relay (condenser contactor) wiring
+Right now your YAML does not assign a “condenser relay” output from the KC868 — it only senses Y1/Y2 and runs blower, pump, EAC, humidifier. So the cleanest approach is:
+
+
+Let the thermostat relay K2 first pole drive the condenser contactor directly.
+
+
+KC868 sees the Y1/Y2 calls via the second pole (as wired above) but does not drive the contactor.
+
+
+Thermostat K2 first pole → condenser contactor:
+From deviceFrom terminalTo deviceTo terminalTransformerRThermostatK2 COM1ThermostatK2 NO1Condenser contactorCoil terminal 1Condenser contactorCoil terminal 2TransformerC
+That’s your “AC relay” path: purely thermostat-driven, independent of KC868.
+If in the future you want the KC868 to own the condenser control, we’d:
+
+
+Move this R → KC868 relay COM, relay NO → contactor coil, etc.
+
+
+And optionally have the thermostat relay just feed KC868 IN2 and not the contactor directly.
+
+
+But with your current YAML, letting the stat own the contactor is simplest and safest.
+
+6. KC868 relays → hydronic pump, EAC, humidifier, blower taps
+These match exactly what your YAML IDs expect:
+
+
+R1 → blower_low
+
+
+R2 → blower_medlow
+
+
+R3 → blower_medhigh
+
+
+R4 → blower_high
+
+
+R5 → hydronic_pump
+
+
+R6 → eac_relay
+
+
+R7 → humidifier_relay
+
+
+R8 → spare_relay8
+
+
+6.1 Common 24 VAC pattern (for all 24 VAC loads)
+For any 24 VAC load (pump enable coil, EAC, humidifier):
+
+Transformer R → A8S Relay COM → A8S Relay NO → Load coil → Transformer C
+
+Hydronic pump (Relay 5)
+From deviceFrom terminalTo deviceTo terminalTransformerRKC868-A8S Relay 5COMKC868-A8S Relay 5NOPump control relay / pump enable inputCoil/enable terminal 1Pump control relay / pumpCoil/enable terminal 2TransformerC
+EAC (Relay 6)
+From deviceFrom terminalTo deviceTo terminalTransformerRKC868-A8S Relay 6COMKC868-A8S Relay 6NOEAC unit24 V hotEAC unit24 V commonTransformerC
+Humidifier (Relay 7)
+From deviceFrom terminalTo deviceTo terminalTransformerRKC868-A8S Relay 7COMKC868-A8S Relay 7NOHumidifier valve / relayCoil terminal 1HumidifierCoil terminal 2TransformerC
+6.2 Blower taps (Relays 1–4)
+These are 120 V or 240 V motor taps, so make sure you’re respecting line voltage and neutral the same way the OEM board did.
+Typical PSC blower wiring pattern:
+
+
+Line hot (e.g., 120 V L) → A8S Relay COM
+
+
+A8S Relay NO → blower motor tap (low/med-low/med-high/high)
+
+
+Blower neutral → line neutral
+
+
+Mapping:
+A8S RelayFunction (per YAML)From deviceFrom terminalTo deviceTo terminalRelay 1blower_lowLine hot (L)→A8S Relay 1COMA8S Relay 1NOBlower motorLow-speed tapRelay 2blower_medlowLine hot (L)→A8S Relay 2COMA8S Relay 2NOBlower motorMed-low tapRelay 3blower_medhighLine hot (L)→A8S Relay 3COMA8S Relay 3NOBlower motorMed-high tapRelay 4blower_highLine hot (L)→A8S Relay 4COMA8S Relay 4NOBlower motorHigh-speed tap
+Blower neutral goes back to the neutral bus, just like the old board did.
+(Only one blower relay is ever on at a time because your update_hvac script explicitly turns them all off, then chooses one.)
+
+7. DS18B20 sensors → KC868 GPIO14 (matches your YAML)
+Your YAML:
+
+one_wire:
+  - platform: gpio
+    id: onewire_bus
+    pin: GPIO14
+
+sensor:
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x0000...
+    name: "Heat Coil Temp"
+
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x1111...
+    name: "Cool Coil Temp"
+
+Wiring:
+From deviceFrom terminalTo deviceTo terminalKC868-A8SGPIO14Both DS18B20sDQKC868-A8S3.3 V (or 5 V if you prefer)Both DS18B20sVCCKC868-A8SGNDBoth DS18B20sGND4.7 kΩ resistorOne end → DQOther end → VCC
+Then update the addresses in the YAML once you read them from the logs.
+
+If you want, I can do one more pass and write this as a single numbered list like:
+
+
+Connect transformer R to …
+
+
+Connect transformer C to …
+
+
+so you can literally check each step with a pen as you wire.
+
+
+----------------------- Q ----------------------
+window.__oai_logHTML?window.__oai_logHTML():window.__oai_SSR_HTML=window.__oai_SSR_HTML||Date.now();requestAnimationFrame((function(){window.__oai_logTTI?window.__oai_logTTI():window.__oai_SSR_TTI=window.__oai_SSR_TTI||Date.now()}))

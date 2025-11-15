@@ -1,0 +1,768 @@
+esphome:
+  name: kc868-a8s-airhandler
+  friendly_name: "KC868-A8S-Air-Handler"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "M9eVl5jPP4aV7Yz8kcbQxOV3e1xR+guL44zKrHflb/o="
+
+ota:
+  - platform: esphome
+    password: "3133fd511af009181b181720dc33a697"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Fallback Hotspot"
+    password: "D8yaLuZ9S5fd"
+
+captive_portal:
+
+# Enable logging
+logger:
+  level: DEBUG
+  logs:
+    component: ERROR
+    sensor: INFO
+    binary_sensor: INFO
+    switch: INFO
+
+# --- Time (for 3am pump exercise + 24h tracking) ---
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Chicago"
+    on_time:
+      - seconds: 0
+        minutes: 0
+        hours: 3
+        then:
+          - script.execute: pump_exercise_if_needed
+
+# --- Globals ---
+globals:
+  # Unix timestamp of last time HEAT (W) was actually called
+  - id: last_heat_timestamp
+    type: long
+    restore_value: yes
+    initial_value: '0'
+
+  # True while we are in the "heat off delay" window
+  - id: extend_heat
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # True while we are in the "cool off delay" window
+  - id: extend_cool
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Whether the blower is allowed to run in heat mode
+  # (for Heating On Delay / coil warm-up)
+  - id: heat_fan_allowed
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# --- I2C + PCF8574 hubs (A8/A8S standard) ---
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+  id: bus_a
+
+pcf8574:
+  - id: pcf_out
+    address: 0x24  # relays 1-8
+  - id: pcf_in
+    address: 0x22  # inputs 1-8
+
+one_wire:
+  - platform: gpio
+    id: onewire_bus
+    pin: GPIO14
+
+# ============================================================
+#  THERMOSTAT INPUTS + FLOW SWITCH
+# ============================================================
+
+binary_sensor:
+  # G - Fan call
+  - platform: gpio
+    name: "Tstat G (Fan Call)"
+    id: tstat_g
+    pin:
+      pcf8574: pcf_in
+      number: 0
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Y1 - Cool stage 1
+  - platform: gpio
+    name: "Tstat Y1 (Cool Stage 1)"
+    id: tstat_y1
+    pin:
+      pcf8574: pcf_in
+      number: 1
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Handle potential cooling off delay
+        - script.execute: cooling_off_delay
+        - script.execute: update_hvac
+
+  # Y2 - Cool stage 2
+  - platform: gpio
+    name: "Tstat Y2 (Cool Stage 2)"
+    id: tstat_y2
+    pin:
+      pcf8574: pcf_in
+      number: 2
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        # Handle potential cooling off delay
+        - script.execute: cooling_off_delay
+        - script.execute: update_hvac
+
+  # W - Hydronic heat (with ON delay & OFF delay)
+  - platform: gpio
+    name: "Tstat W (Heat)"
+    id: tstat_w
+    pin:
+      pcf8574: pcf_in
+      number: 3
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 50ms
+      - delayed_off: 50ms
+    on_press:
+      then:
+        # New heat call: cancel any previous off-delay and reset fan permission
+        - lambda: |-
+            id(extend_heat) = false;
+            id(heat_fan_allowed) = false;
+        # Turn pump on immediately and evaluate logic
+        - script.execute: update_hvac
+        # Start heating ON delay (coil warm-up)
+        - script.execute: heating_on_delay
+    on_release:
+      then:
+        # Start heat OFF delay based on Heating Off Delay setting
+        - script.execute: heat_off_delay
+
+  # Flow Switch FS (optional, for open-loop)
+  # Wire so that "active flow" = ON state; adjust inverted: if needed.
+  - platform: gpio
+    name: "Flow Switch FS"
+    id: flow_switch_fs
+    pin:
+      pcf8574: pcf_in
+      number: 4
+      mode: INPUT
+      inverted: true
+    filters:
+      - delayed_on: 100ms
+      - delayed_off: 100ms
+    on_press:
+      then:
+        - script.execute: update_hvac
+    on_release:
+      then:
+        - script.execute: update_hvac
+
+  # Spares
+  - platform: gpio
+    name: "Spare IN6"
+    id: spare_in6
+    pin:
+      pcf8574: pcf_in
+      number: 5
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN7"
+    id: spare_in7
+    pin:
+      pcf8574: pcf_in
+      number: 6
+      mode: INPUT
+      inverted: true
+
+  - platform: gpio
+    name: "Spare IN8"
+    id: spare_in8
+    pin:
+      pcf8574: pcf_in
+      number: 7
+      mode: INPUT
+      inverted: true
+
+# ============================================================
+#  SWITCHES: TEMPLATE OPTIONS + RELAY OUTPUTS
+# ============================================================
+
+switch:
+  # --- Template switches (options) ---
+
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # --- Physical relays on KC868-A8S ---
+
+  # Blower speeds
+  - platform: gpio
+    name: "Blower Speed Low"
+    id: blower_low
+    pin:
+      pcf8574: pcf_out
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-Low"
+    id: blower_medlow
+    pin:
+      pcf8574: pcf_out
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed Med-High"
+    id: blower_medhigh
+    pin:
+      pcf8574: pcf_out
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    name: "Blower Speed High"
+    id: blower_high
+    pin:
+      pcf8574: pcf_out
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: pcf_out
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Electronic Air Cleaner
+  - platform: gpio
+    name: "Electronic Air Cleaner"
+    id: eac_relay
+    pin:
+      pcf8574: pcf_out
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Humidifier
+  - platform: gpio
+    name: "Humidifier Relay"
+    id: humidifier_relay
+    pin:
+      pcf8574: pcf_out
+      number: 6
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Spare relay
+  - platform: gpio
+    name: "Spare Relay 8"
+    id: spare_relay8
+    pin:
+      pcf8574: pcf_out
+      number: 7
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+# ============================================================
+#  USER SETTINGS (DIP-switch-like + speeds + accessory behavior)
+# ============================================================
+
+select:
+  # AC configuration (DIP-style)
+  - platform: template
+    name: "AC Configuration"
+    id: ac_configuration
+    optimistic: true
+    options:
+      - "Single-Stage A/C"
+      - "Two-Stage A/C"
+    initial_option: "Two-Stage A/C"
+
+number:
+  # Heating OFF delay in seconds
+  - platform: template
+    name: "Heating Off Delay (sec)"
+    id: heating_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Cooling OFF delay in seconds
+  - platform: template
+    name: "Cooling Off Delay (sec)"
+    id: cooling_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Heating ON delay in seconds (coil warm-up before blower)
+  - platform: template
+    name: "Heating On Delay (sec)"
+    id: heating_on_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 5
+    initial_value: 0
+
+  # Blower speed mapping 1..4 -> low..high
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+  # EAC/Humidifier enable flags (0/1)
+  - platform: template
+    name: "Enable EAC on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+  - platform: template
+    name: "Enable Humidifier on Heat"
+    id: enable_humid_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+# ============================================================
+#  SCRIPTS: main HVAC logic + delays + pump exercise
+# ============================================================
+
+script:
+  # Main logic: choose mode, blower speed, pump, EAC, humidifier
+  - id: update_hvac
+    mode: single
+    then:
+      - lambda: |-
+          const bool call_g_raw  = id(tstat_g).state;
+          const bool call_y1_raw = id(tstat_y1).state;
+          const bool call_y2_raw = id(tstat_y2).state;
+          const bool call_w_raw  = id(tstat_w).state;
+          const bool extend_h    = id(extend_heat);
+          const bool cool_hold   = id(extend_cool);
+
+          const bool two_stage_ac = (id(ac_configuration).state == "Two-Stage A/C");
+          const bool call_y2 = two_stage_ac ? call_y2_raw : false;
+          const bool call_y1 = call_y1_raw;
+
+          // Flow switch usage
+          const bool fs_used = id(use_flow_switch_fs).state;
+          const bool fs_ok   = (!fs_used) || id(flow_switch_fs).state;
+
+          bool call_g = call_g_raw;
+
+          // Heat request including off-delay extension
+          bool call_w_effective = call_w_raw || extend_h;
+
+          // For blower & "heat mode", only allow if FS is OK (when used)
+          const bool heat_allowed = call_w_effective && fs_ok;
+
+          // Track "real" thermostat heat calls for last_heat_timestamp
+          if (call_w_raw && id(sntp_time).now().is_valid()) {
+            const time_t now_ts = id(sntp_time).now().timestamp;
+            id(last_heat_timestamp) = now_ts;
+          }
+
+          // Turn everything OFF first (only one speed at a time)
+          id(blower_low).turn_off();
+          id(blower_medlow).turn_off();
+          id(blower_medhigh).turn_off();
+          id(blower_high).turn_off();
+
+          // Pump and accessories off by default
+          id(hydronic_pump).turn_off();
+          id(eac_relay).turn_off();
+          id(humidifier_relay).turn_off();
+
+          int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+          // Determine if we are in cooling off-delay "hold"
+          bool cool_off_hold = false;
+          if (cool_hold &&
+              !call_w_effective && !call_y1 && !call_y2 && !call_g) {
+            cool_off_hold = true;
+          }
+
+          // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
+          if (heat_allowed) {
+            // Pump always runs during heat call (incl. off-delay)
+            id(hydronic_pump).turn_on();
+
+            // Respect Heating On Delay for the blower
+            if (id(heat_fan_allowed)) {
+              speed = (int) id(heat_speed).state;
+            } else {
+              speed = 0;  // Pump only, no blower yet
+            }
+
+          } else if (call_y2) {
+            speed = (int) id(cool_stage2_speed).state;
+
+          } else if (call_y1) {
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (cool_off_hold) {
+            // Cooling off-delay: fan-only at stage-1 speed
+            speed = (int) id(cool_stage1_speed).state;
+
+          } else if (call_g) {
+            // Fan-only: use cool stage 1 speed
+            speed = (int) id(cool_stage1_speed).state;
+          }
+
+          // If we have a heat call but FS is enabled and NOT OK,
+          // run the pump to try to establish flow, but DO NOT run the blower.
+          if (call_w_effective && fs_used && !fs_ok) {
+            id(hydronic_pump).turn_on();
+            // If fan was allowed, override speed to 0 until FS_OK
+            speed = 0;
+          }
+
+          // Apply chosen blower speed
+          switch (speed) {
+            case 1:
+              id(blower_low).turn_on();
+              break;
+            case 2:
+              id(blower_medlow).turn_on();
+              break;
+            case 3:
+              id(blower_medhigh).turn_on();
+              break;
+            case 4:
+              id(blower_high).turn_on();
+              break;
+            default:
+              break;  // blower off
+          }
+
+          // Determine if blower is running
+          const bool blower_on =
+            id(blower_low).state ||
+            id(blower_medlow).state ||
+            id(blower_medhigh).state ||
+            id(blower_high).state;
+
+          // EAC behavior: basically "blower on" logic with per-mode enables
+          bool eac_should_run = false;
+          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+            eac_should_run = true;
+          }
+          if ((call_y1 || call_y2 || cool_off_hold) &&
+              ((int)id(enable_eac_on_cool).state == 1)) {
+            eac_should_run = true;
+          }
+          if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
+              ((int)id(enable_eac_on_fan).state == 1)) {
+            eac_should_run = true;
+          }
+
+          if (blower_on && eac_should_run) {
+            id(eac_relay).turn_on();
+          }
+
+          // Humidifier behavior: heat-only, blower must be on
+          if (blower_on && heat_allowed &&
+              ((int)id(enable_humid_on_heat).state == 1)) {
+            id(humidifier_relay).turn_on();
+          }
+
+          // If no effective heat call anymore, clear heat_fan_allowed so next cycle warms again
+          if (!call_w_effective && !call_w_raw) {
+            id(heat_fan_allowed) = false;
+          }
+
+  # Heating OFF delay (uses Heating Off Delay (sec))
+  - id: heat_off_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (int) id(heating_off_delay_sec).state > 0;
+          then:
+            - lambda: |-
+                id(extend_heat) = true;
+            - delay: !lambda "return (int) id(heating_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                id(extend_heat) = false;
+                id(heat_fan_allowed) = false;
+            - script.execute: update_hvac
+
+  # Heating ON delay (coil warm-up before blower)
+  - id: heating_on_delay
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return (int) id(heating_on_delay_sec).state > 0;
+          then:
+            - delay: !lambda "return (int) id(heating_on_delay_sec).state * 1000;"
+            - lambda: |-
+                // Only allow fan if heat call is still active (W or off-delay)
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+          else:
+            - lambda: |-
+                if (id(tstat_w).state || id(extend_heat)) {
+                  id(heat_fan_allowed) = true;
+                }
+            - script.execute: update_hvac
+
+  # Cooling OFF delay (blower run-on after cooling)
+  - id: cooling_off_delay
+    mode: restart
+    then:
+      - lambda: |-
+          const int delay_s = (int) id(cooling_off_delay_sec).state;
+          // If delay is disabled, ensure we clear and exit
+          if (delay_s <= 0) {
+            id(extend_cool) = false;
+            return;
+          }
+          // Only start cool-off hold if no other calls are active
+          if (id(tstat_w).state || id(tstat_y1).state ||
+              id(tstat_y2).state || id(tstat_g).state) {
+            id(extend_cool) = false;
+            return;
+          }
+          id(extend_cool) = true;
+      - if:
+          condition:
+            lambda: |-
+              return id(extend_cool);
+          then:
+            - delay: !lambda "return (int) id(cooling_off_delay_sec).state * 1000;"
+            - lambda: |-
+                id(extend_cool) = false;
+            - script.execute: update_hvac
+
+  # Check if pump exercise is needed at 3am
+  - id: pump_exercise_if_needed
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(enable_pump_exercise).state) {
+            return;
+          }
+          if (!id(sntp_time).now().is_valid()) {
+            return;
+          }
+
+          if (id(tstat_w).state) {
+            return;
+          }
+
+          const time_t now_ts = id(sntp_time).now().timestamp;
+          const long last_ts  = id(last_heat_timestamp);
+          const long diff     = (last_ts == 0) ? (24L*60L*60L + 1L) : (now_ts - last_ts);
+
+          if (diff >= 24L * 60L * 60L) {
+            id(hydronic_pump).turn_on();
+            id(pump_exercise_run).execute();
+          }
+
+  # Actually run the pump exercise (default 6 minutes)
+  - id: pump_exercise_run
+    mode: restart
+    then:
+      - delay: 6min
+      - if:
+          condition:
+            binary_sensor.is_on: tstat_w
+          then:
+            - script.execute: update_hvac
+          else:
+            - switch.turn_off: hydronic_pump
+
+# ============================================================
+#  STATUS TEXT SENSORS
+# ============================================================
+
+text_sensor:
+  - platform: template
+    name: "Air Handler Mode"
+    id: air_handler_mode
+    lambda: |-
+      if (id(tstat_w).state || id(extend_heat)) {
+        if (id(use_flow_switch_fs).state && !id(flow_switch_fs).state) {
+          return {"HEAT_WAIT_FS"};
+        } else {
+          return {"HEAT"};
+        }
+      } else if (id(tstat_y2).state &&
+                 (id(ac_configuration).state == "Two-Stage A/C")) {
+        return {"COOL_STAGE_2"};
+      } else if (id(tstat_y1).state) {
+        return {"COOL_STAGE_1"};
+      } else if (id(extend_cool)) {
+        return {"COOL_OFF_DELAY"};
+      } else if (id(tstat_g).state) {
+        return {"FAN_ONLY"};
+      } else {
+        return {"IDLE"};
+      }
+
+  - platform: template
+    name: "Blower Speed Selected"
+    id: blower_speed_label
+    lambda: |-
+      if (id(blower_low).state)        return {"LOW"};
+      if (id(blower_medlow).state)     return {"MED_LOW"};
+      if (id(blower_medhigh).state)    return {"MED_HIGH"};
+      if (id(blower_high).state)       return {"HIGH"};
+      return {"OFF"};
+
+sensor:
+  # Heat coil temperature sensor (DS18B20 #1)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x0000000000000000  # <-- REPLACE with real address
+    name: "Heat Coil Temp"
+    id: heat_coil_temp
+    update_interval: 30s
+
+  # Cool coil temperature sensor (DS18B20 #2)
+  - platform: dallas_temp
+    one_wire_id: onewire_bus
+    address: 0x1111111111111111  # <-- REPLACE with real address
+    name: "Cool Coil Temp"
+    id: cool_coil_temp
+    update_interval: 30s

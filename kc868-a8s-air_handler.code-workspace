@@ -1,0 +1,134 @@
+{
+  "folders": [
+    {
+      "name": "KC868-A8S Air Handler",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.associations": {
+      "*.yaml": "yaml",
+      "*.yml": "yaml"
+    },
+    "yaml.schemas": {
+      "https://esphome.io/schema.json": [
+        "*.yaml",
+        "*.yml"
+      ]
+    },
+    "yaml.format.enable": true,
+    "yaml.validate": true,
+    "editor.tabSize": 2,
+    "editor.insertSpaces": true,
+    "editor.detectIndentation": false,
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true,
+    "editor.rulers": [80, 120],
+    "editor.wordWrap": "bounded",
+    "editor.wordWrapColumn": 120
+  },
+  "extensions": {
+    "recommendations": [
+      "esphome.esphome-vscode",
+      "redhat.vscode-yaml",
+      "ms-vscode.vscode-json",
+      "ms-python.python",
+      "davidanson.vscode-markdownlint",
+      "yzhang.markdown-all-in-one"
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "ESPHome: Validate Config",
+        "type": "shell",
+        "command": "esphome",
+        "args": ["config", "${workspaceFolder}/kc868-a8s-airhandler.yaml"],
+        "group": "build",
+        "presentation": {
+          "echo": true,
+          "reveal": "always",
+          "focus": false,
+          "panel": "shared"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "ESPHome: Compile",
+        "type": "shell",
+        "command": "esphome",
+        "args": ["compile", "${workspaceFolder}/kc868-a8s-airhandler.yaml"],
+        "group": "build",
+        "presentation": {
+          "echo": true,
+          "reveal": "always",
+          "focus": false,
+          "panel": "shared"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "ESPHome: Upload",
+        "type": "shell",
+        "command": "esphome",
+        "args": ["upload", "${workspaceFolder}/kc868-a8s-airhandler.yaml"],
+        "group": "build",
+        "presentation": {
+          "echo": true,
+          "reveal": "always",
+          "focus": false,
+          "panel": "shared"
+        },
+        "problemMatcher": [],
+        "dependsOn": "ESPHome: Compile"
+      },
+      {
+        "label": "ESPHome: Logs",
+        "type": "shell",
+        "command": "esphome",
+        "args": ["logs", "${workspaceFolder}/kc868-a8s-airhandler.yaml"],
+        "group": "test",
+        "presentation": {
+          "echo": true,
+          "reveal": "always",
+          "focus": false,
+          "panel": "shared"
+        },
+        "problemMatcher": []
+      },
+      {
+        "label": "Flash via esptool",
+        "type": "shell",
+        "command": "esptool.py",
+        "args": [
+          "--chip", "esp32",
+          "--port", "/dev/ttyUSB0",
+          "--baud", "460800",
+          "write_flash", "0x0",
+          "${input:binaryPath}"
+        ],
+        "group": "build",
+        "presentation": {
+          "echo": true,
+          "reveal": "always",
+          "focus": false,
+          "panel": "shared"
+        },
+        "problemMatcher": []
+      }
+    ],
+    "inputs": [
+      {
+        "id": "binaryPath",
+        "description": "Path to binary file",
+        "default": "${workspaceFolder}/.esphome/build/kc868-a8s-airhandler/.pioenvs/kc868-a8s-airhandler/firmware.bin",
+        "type": "promptString"
+      }
+    ]
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": []
+  }
+}
