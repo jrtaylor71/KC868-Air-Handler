@@ -27,7 +27,8 @@ echo "$VERSION" > VERSION
 
 # Update ESPHome configuration
 sed -i "s/version: \".*\"/version: \"$VERSION\"/" kc868-a8s-airhandler.yaml
-sed -i "s/return {\".*\"};/return {\"$VERSION\"};/" kc868-a8s-airhandler.yaml
+# Only update the firmware version sensor, not all return statements
+sed -i "/name: \"Firmware Version\"/,/lambda:/{s/return {\".*\"};/return {\"$VERSION\"};/}" kc868-a8s-airhandler.yaml
 
 echo "Updated version to $VERSION in:"
 echo "  - VERSION"

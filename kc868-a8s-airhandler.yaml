@@ -3,7 +3,7 @@ esphome:
   friendly_name: "KC868-A8S Air Handler"
   project:
     name: "jrtaylor71.kc868-air-handler"
-    version: "1.2.0"
+    version: 1.2.1
 
 esp32:
   board: esp32dev
@@ -115,7 +115,7 @@ number:
     min_value: 1
     max_value: 4
     step: 1
-    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+    initial_value: 4  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
 
   - platform: template
     name: "Cool Stage 2 Blower Speed"
@@ -133,7 +133,7 @@ number:
     min_value: 1
     max_value: 4
     step: 1
-    initial_value: 2
+    initial_value: 3
 
   # EAC/Humidifier enable flags (0/1)
   - platform: template
@@ -198,6 +198,97 @@ switch:
       - script.execute: update_hvac
     turn_off_action:
       - script.execute: update_hvac
+
+  # --- Physical relays on KC868-A8S (Internal Use Only) ---
+
+  # Blower speeds - Internal switches, not exposed to HA for individual control
+  - platform: gpio
+    name: "Blower Speed Low (Status)"
+    id: blower_low
+    pin:
+      pcf8574: pcf_out
+      number: 0
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
+
+  - platform: gpio
+    name: "Blower Speed Med-Low (Status)"
+    id: blower_medlow
+    pin:
+      pcf8574: pcf_out
+      number: 1
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
+
+  - platform: gpio
+    name: "Blower Speed Med-High (Status)"
+    id: blower_medhigh
+    pin:
+      pcf8574: pcf_out
+      number: 2
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
+
+  - platform: gpio
+    name: "Blower Speed High (Status)"
+    id: blower_high
+    pin:
+      pcf8574: pcf_out
+      number: 3
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
+
+  # Hydronic pump
+  - platform: gpio
+    name: "Hydronic Pump"
+    id: hydronic_pump
+    pin:
+      pcf8574: pcf_out
+      number: 4
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Electronic Air Cleaner
+  - platform: gpio
+    name: "Electronic Air Cleaner"
+    id: eac_relay
+    pin:
+      pcf8574: pcf_out
+      number: 5
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Humidifier
+  - platform: gpio
+    name: "Humidifier Relay"
+    id: humidifier_relay
+    pin:
+      pcf8574: pcf_out
+      number: 6
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
+
+  # Spare relay
+  - platform: gpio
+    name: "Spare Relay 8"
+    id: spare_relay8
+    pin:
+      pcf8574: pcf_out
+      number: 7
+      mode: OUTPUT
+      inverted: true
+    restore_mode: ALWAYS_OFF
 
 # ============================================================
 #  END OF USER CONFIGURATION - SYSTEM CONFIGURATION BELOW
@@ -427,100 +518,8 @@ binary_sensor:
       return id(blower_high).state;
 
 # ============================================================
-#  SWITCHES: TEMPLATE OPTIONS + RELAY OUTPUTS
+#  SWITCHES: Physical relays moved to user configuration section above
 # ============================================================
-
-switch:
-  # --- Physical relays on KC868-A8S (Internal Use Only) ---
-
-  # Blower speeds - Internal switches, not exposed to HA for individual control
-  - platform: gpio
-    name: "Blower Speed Low (Status)"
-    id: blower_low
-    pin:
-      pcf8574: pcf_out
-      number: 0
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-    internal: true  # Hide from Home Assistant
-
-  - platform: gpio
-    name: "Blower Speed Med-Low (Status)"
-    id: blower_medlow
-    pin:
-      pcf8574: pcf_out
-      number: 1
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-    internal: true  # Hide from Home Assistant
-
-  - platform: gpio
-    name: "Blower Speed Med-High (Status)"
-    id: blower_medhigh
-    pin:
-      pcf8574: pcf_out
-      number: 2
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-    internal: true  # Hide from Home Assistant
-
-  - platform: gpio
-    name: "Blower Speed High (Status)"
-    id: blower_high
-    pin:
-      pcf8574: pcf_out
-      number: 3
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-    internal: true  # Hide from Home Assistant
-
-  # Hydronic pump
-  - platform: gpio
-    name: "Hydronic Pump"
-    id: hydronic_pump
-    pin:
-      pcf8574: pcf_out
-      number: 4
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-
-  # Electronic Air Cleaner
-  - platform: gpio
-    name: "Electronic Air Cleaner"
-    id: eac_relay
-    pin:
-      pcf8574: pcf_out
-      number: 5
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-
-  # Humidifier
-  - platform: gpio
-    name: "Humidifier Relay"
-    id: humidifier_relay
-    pin:
-      pcf8574: pcf_out
-      number: 6
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
-
-  # Spare relay
-  - platform: gpio
-    name: "Spare Relay 8"
-    id: spare_relay8
-    pin:
-      pcf8574: pcf_out
-      number: 7
-      mode: OUTPUT
-      inverted: true
-    restore_mode: ALWAYS_OFF
 
 # ============================================================
 #  SCRIPTS: main HVAC logic + delays + pump exercise
@@ -816,7 +815,7 @@ text_sensor:
     name: "Firmware Version"
     id: firmware_version
     lambda: |-
-      return {"1.1.1"};
+      return {"1.2.1"};
 
   - platform: template
     name: "Air Handler Mode"
@@ -865,7 +864,7 @@ sensor:
   # Heat coil temperature sensor (DS18B20 #1)
   - platform: dallas_temp
     one_wire_id: onewire_bus
-    address: 0x0000000000000000  # <-- REPLACE with real address
+    address: 0x620b2358a0391e28  # <-- REPLACE with real address
     name: "Heat Coil Temp"
     id: heat_coil_temp
     update_interval: 30s
@@ -873,7 +872,7 @@ sensor:
   # Cool coil temperature sensor (DS18B20 #2)
   - platform: dallas_temp
     one_wire_id: onewire_bus
-    address: 0x1111111111111111  # <-- REPLACE with real address
+    address: 0xaf0b23586642c128  # <-- REPLACE with real address
     name: "Cool Coil Temp"
     id: cool_coil_temp
     update_interval: 30s

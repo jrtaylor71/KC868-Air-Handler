@@ -148,7 +148,21 @@ This update addresses the safety concern of multiple blower speeds being control
 - Flow switch input (IN5) still monitored, just ignored unless enabled
 - All other HVAC logic and safety features remain unchanged
 
-## [1.2.0] - 2025-11-17
+# CHANGELOG
+
+## [Unreleased]
+
+## [1.2.1] - 2025-01-21
+### Fixed
+- **CRITICAL**: Fixed duplicate `switch:` section that was causing YAML syntax error and preventing compilation
+- Merged physical relay switches into the user configuration section to eliminate duplication
+- Updated firmware version sensor to display correct version (1.2.1)
+
+### Changed
+- Consolidated all switch definitions into single switch section for better organization
+- Improved code comments to indicate physical relay location in user settings
+
+## [1.2.0] - 2025-01-21
 
 ### Added
 - **Consolidated User Settings**: All user-configurable settings moved to dedicated section at top of file
