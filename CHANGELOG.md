@@ -128,3 +128,22 @@ This update addresses the safety concern of multiple blower speeds being control
 - Only the "Firmware Version" sensor should display the version number
 - All other text sensors display their intended status values
 - No functional changes to HVAC logic or safety features
+
+## [1.1.3] - 2025-11-17
+
+### Changed
+- **Flow Switch Default**: Changed "Use Flow Switch FS" default from ON to OFF
+  - Most hydronic heating installations don't have flow switches installed
+  - Safer default behavior - system will operate normally without flow switch safety check
+  - Users with flow switches can still enable this feature manually in Home Assistant
+
+### Configuration Impact
+- **New Installations**: Flow switch safety is disabled by default
+- **Existing Installations**: Will retain their current flow switch setting (no change)
+- **Manual Override**: Users can toggle "Use Flow Switch FS" switch in Home Assistant at any time
+
+### Technical Details
+- Changed `restore_mode` from `RESTORE_DEFAULT_ON` to `RESTORE_DEFAULT_OFF`
+- No changes to flow switch logic or safety behavior when enabled
+- Flow switch input (IN5) still monitored, just ignored unless enabled
+- All other HVAC logic and safety features remain unchanged
