@@ -147,3 +147,34 @@ This update addresses the safety concern of multiple blower speeds being control
 - No changes to flow switch logic or safety behavior when enabled
 - Flow switch input (IN5) still monitored, just ignored unless enabled
 - All other HVAC logic and safety features remain unchanged
+
+## [1.2.0] - 2025-11-17
+
+### Added
+- **Consolidated User Settings**: All user-configurable settings moved to dedicated section at top of file
+- **Clear Section Organization**: Settings organized into logical groups with descriptive headers
+- **Easy Customization**: All customizable values now in one place for simple modification
+
+### Changed
+- **File Structure**: Major reorganization for better usability
+  - User settings section moved after basic ESPHome configuration
+  - Settings grouped by function: AC Configuration, Timing/Speed Settings, Feature Switches
+  - Clear boundaries with "USER CONFIGURATION" and "END OF USER CONFIGURATION" markers
+- **Setting Categories**:
+  - **AC System Configuration**: AC type selection, manual blower speed control
+  - **Timing and Speed Settings**: All delay timings and blower speed mappings
+  - **Feature Enable/Disable Switches**: Flow switch usage, pump exercise, manual override
+
+### Improved
+- **Configuration Maintenance**: Much easier to find and modify user settings
+- **Documentation**: Clear section headers explain what each group of settings controls
+- **Code Organization**: Removed duplicate settings from original scattered locations
+
+### Technical Details
+- No functional changes to HVAC logic or behavior
+- All setting IDs and references remain identical
+- Settings moved from scattered locations throughout file to single consolidated section
+- File structure: User Settings → System Configuration → Hardware Definitions → Logic Scripts
+- Default values preserved exactly as before
+
+This update makes the configuration file much more user-friendly while maintaining all existing functionality and safety features.
