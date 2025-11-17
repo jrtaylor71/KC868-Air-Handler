@@ -3,7 +3,7 @@ esphome:
   friendly_name: "KC868-A8S Air Handler"
   project:
     name: "jrtaylor71.kc868-air-handler"
-    version: "1.1.3"
+    version: "1.2.0"
 
 esp32:
   board: esp32dev
@@ -38,6 +38,170 @@ logger:
     sensor: INFO
     binary_sensor: INFO
     switch: INFO
+
+# ============================================================
+#  USER CONFIGURATION SETTINGS - CUSTOMIZE THESE AS NEEDED
+# ============================================================
+
+# AC System Configuration
+select:
+  # AC configuration (DIP-style)
+  - platform: template
+    name: "AC Configuration"
+    id: ac_configuration
+    optimistic: true
+    options:
+      - "Single-Stage A/C"
+      - "Two-Stage A/C"
+    initial_option: "Two-Stage A/C"
+
+  # Manual blower speed control (when override is enabled)
+  - platform: template
+    name: "Manual Blower Speed"
+    id: manual_blower_speed
+    optimistic: true
+    options:
+      - "Off"
+      - "Low"
+      - "Med-Low"
+      - "Med-High"
+      - "High"
+    initial_option: "Off"
+    on_value:
+      then:
+        - if:
+            condition:
+              switch.is_on: manual_blower_override
+            then:
+              - script.execute: update_hvac
+
+# Timing and Speed Settings
+number:
+  # Heating OFF delay in seconds
+  - platform: template
+    name: "Heating Off Delay (sec)"
+    id: heating_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Cooling OFF delay in seconds
+  - platform: template
+    name: "Cooling Off Delay (sec)"
+    id: cooling_off_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 30
+    initial_value: 30
+
+  # Heating ON delay in seconds (coil warm-up before blower)
+  - platform: template
+    name: "Heating On Delay (sec)"
+    id: heating_on_delay_sec
+    optimistic: true
+    min_value: 0
+    max_value: 120
+    step: 5
+    initial_value: 0
+
+  # Blower speed mapping 1..4 -> low..high
+  - platform: template
+    name: "Cool Stage 1 Blower Speed"
+    id: cool_stage1_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
+
+  - platform: template
+    name: "Cool Stage 2 Blower Speed"
+    id: cool_stage2_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 4  # usually full speed on Y2
+
+  - platform: template
+    name: "Heat Blower Speed"
+    id: heat_speed
+    optimistic: true
+    min_value: 1
+    max_value: 4
+    step: 1
+    initial_value: 2
+
+  # EAC/Humidifier enable flags (0/1)
+  - platform: template
+    name: "Enable EAC on Heat"
+    id: enable_eac_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Cool"
+    id: enable_eac_on_cool
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+  - platform: template
+    name: "Enable EAC on Fan Only"
+    id: enable_eac_on_fan
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 0
+
+  - platform: template
+    name: "Enable Humidifier on Heat"
+    id: enable_humid_on_heat
+    optimistic: true
+    min_value: 0
+    max_value: 1
+    step: 1
+    initial_value: 1
+
+# Feature Enable/Disable Switches
+switch:
+  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
+  - platform: template
+    name: "Use Flow Switch FS"
+    id: use_flow_switch_fs
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  # Enable or disable the daily pump exercise
+  - platform: template
+    name: "Enable Pump Exercise"
+    id: enable_pump_exercise
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # Manual blower speed override (safe single selection)
+  - platform: template
+    name: "Manual Blower Override"
+    id: manual_blower_override
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - script.execute: update_hvac
+    turn_off_action:
+      - script.execute: update_hvac
+
+# ============================================================
+#  END OF USER CONFIGURATION - SYSTEM CONFIGURATION BELOW
+# ============================================================
 
 # --- Time (for 3am pump exercise + 24h tracking) ---
 time:
@@ -267,33 +431,6 @@ binary_sensor:
 # ============================================================
 
 switch:
-  # --- Template switches (options) ---
-
-  # Use Flow Switch FS (for open-loop safety). OFF = ignore FS.
-  - platform: template
-    name: "Use Flow Switch FS"
-    id: use_flow_switch_fs
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-
-  # Enable or disable the daily pump exercise
-  - platform: template
-    name: "Enable Pump Exercise"
-    id: enable_pump_exercise
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
-
-  # Manual blower speed override (safe single selection)
-  - platform: template
-    name: "Manual Blower Override"
-    id: manual_blower_override
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_OFF
-    turn_on_action:
-      - script.execute: update_hvac
-    turn_off_action:
-      - script.execute: update_hvac
-
   # --- Physical relays on KC868-A8S (Internal Use Only) ---
 
   # Blower speeds - Internal switches, not exposed to HA for individual control
@@ -384,137 +521,6 @@ switch:
       mode: OUTPUT
       inverted: true
     restore_mode: ALWAYS_OFF
-
-# ============================================================
-#  USER SETTINGS (DIP-switch-like + speeds + accessory behavior)
-# ============================================================
-
-select:
-  # AC configuration (DIP-style)
-  - platform: template
-    name: "AC Configuration"
-    id: ac_configuration
-    optimistic: true
-    options:
-      - "Single-Stage A/C"
-      - "Two-Stage A/C"
-    initial_option: "Single-Stage A/C"
-
-  # Manual blower speed control (when override is enabled)
-  - platform: template
-    name: "Manual Blower Speed"
-    id: manual_blower_speed
-    optimistic: true
-    options:
-      - "Off"
-      - "Low"
-      - "Med-Low"
-      - "Med-High"
-      - "High"
-    initial_option: "Off"
-    on_value:
-      then:
-        - if:
-            condition:
-              switch.is_on: manual_blower_override
-            then:
-              - script.execute: update_hvac
-
-number:
-  # Heating OFF delay in seconds
-  - platform: template
-    name: "Heating Off Delay (sec)"
-    id: heating_off_delay_sec
-    optimistic: true
-    min_value: 0
-    max_value: 120
-    step: 30
-    initial_value: 30
-
-  # Cooling OFF delay in seconds
-  - platform: template
-    name: "Cooling Off Delay (sec)"
-    id: cooling_off_delay_sec
-    optimistic: true
-    min_value: 0
-    max_value: 120
-    step: 30
-    initial_value: 30
-
-  # Heating ON delay in seconds (coil warm-up before blower)
-  - platform: template
-    name: "Heating On Delay (sec)"
-    id: heating_on_delay_sec
-    optimistic: true
-    min_value: 0
-    max_value: 120
-    step: 5
-    initial_value: 0
-
-  # Blower speed mapping 1..4 -> low..high
-  - platform: template
-    name: "Cool Stage 1 Blower Speed"
-    id: cool_stage1_speed
-    optimistic: true
-    min_value: 1
-    max_value: 4
-    step: 1
-    initial_value: 2  # 1=Low, 2=Med-Low, 3=Med-High, 4=High
-
-  - platform: template
-    name: "Cool Stage 2 Blower Speed"
-    id: cool_stage2_speed
-    optimistic: true
-    min_value: 1
-    max_value: 4
-    step: 1
-    initial_value: 4  # usually full speed on Y2
-
-  - platform: template
-    name: "Heat Blower Speed"
-    id: heat_speed
-    optimistic: true
-    min_value: 1
-    max_value: 4
-    step: 1
-    initial_value: 2
-
-  # EAC/Humidifier enable flags (0/1)
-  - platform: template
-    name: "Enable EAC on Heat"
-    id: enable_eac_on_heat
-    optimistic: true
-    min_value: 0
-    max_value: 1
-    step: 1
-    initial_value: 1
-
-  - platform: template
-    name: "Enable EAC on Cool"
-    id: enable_eac_on_cool
-    optimistic: true
-    min_value: 0
-    max_value: 1
-    step: 1
-    initial_value: 1
-
-  - platform: template
-    name: "Enable EAC on Fan Only"
-    id: enable_eac_on_fan
-    optimistic: true
-    min_value: 0
-    max_value: 1
-    step: 1
-    initial_value: 0
-
-  - platform: template
-    name: "Enable Humidifier on Heat"
-    id: enable_humid_on_heat
-    optimistic: true
-    min_value: 0
-    max_value: 1
-    step: 1
-    initial_value: 1
 
 # ============================================================
 #  SCRIPTS: main HVAC logic + delays + pump exercise
