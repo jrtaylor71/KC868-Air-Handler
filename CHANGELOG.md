@@ -69,3 +69,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Discover and update DS18B20 sensor addresses from device logs
 - Complete physical wiring per documentation
 - Commission and test all HVAC modes
+## [1.1.0] - 2025-11-17
+
+### Added
+- **Blower Safety Controls**: Individual blower speed switches are now hidden from Home Assistant to prevent multiple speeds being activated simultaneously
+- **Manual Blower Override**: New safe manual control system with single override switch
+- **Manual Blower Speed Selector**: Dropdown selector for safe speed selection (Off/Low/Med-Low/Med-High/High)
+- **Blower Control Mode Status**: Shows whether blower is in AUTO or MANUAL mode
+- **Read-only Blower Status Sensors**: Individual binary sensors showing current blower speed states
+
+### Changed
+- **Blower Speed Switches**: Now marked as `internal: true` to hide from Home Assistant interface
+- **HVAC Logic**: Updated to handle manual override mode while maintaining all existing safety features
+- **Accessory Control**: EAC and humidifier remain off during manual blower operation (unless heat call is active)
+
+### Safety Improvements
+- **Motor Protection**: Prevents accidental activation of multiple blower speeds
+- **Manual Override Safety**: Manual mode only affects blower speed, all other HVAC logic remains active
+- **Flow Switch Integration**: Flow switch safety still applies in manual mode during heat calls
+- **Pump Protection**: Hydronic pump still operates normally during manual blower operation with heat calls
+
+### Technical Details
+- Manual override implemented with template switches and selectors
+- Blower control logic updated to prioritize manual override when enabled
+- All existing timing delays, safety features, and accessory controls preserved
+- Home Assistant interface now shows safe control options only
+
+This update addresses the safety concern of multiple blower speeds being controllable simultaneously while maintaining all existing functionality and adding convenient manual override capabilities.
