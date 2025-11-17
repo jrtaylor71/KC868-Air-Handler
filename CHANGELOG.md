@@ -107,3 +107,24 @@ This update addresses the safety concern of multiple blower speeds being control
 - Variable `cool_off_hold` now declared at the beginning of the lambda function for proper scope access
 - No functional changes to HVAC logic, only scope correction for compilation
 - All existing features and safety improvements from v1.1.0 remain intact
+
+## [1.1.2] - 2025-11-17
+
+### Fixed
+- **Text Sensor Display**: Fixed Air Handler Mode sensor to show correct status values instead of version number
+  - Now correctly displays: HEAT, COOL_STAGE_1, COOL_STAGE_2, COOL_OFF_DELAY, FAN_ONLY, IDLE, HEAT_WAIT_FS
+- **Blower Speed Display**: Fixed Blower Speed Selected sensor to show actual speeds
+  - Now correctly displays: LOW, MED_LOW, MED_HIGH, HIGH, OFF
+- **Control Mode Display**: Fixed Blower Control Mode sensor to show AUTO/MANUAL instead of version number
+- **Release Script**: Improved release script to only update firmware version sensor, not all return statements
+
+### Root Cause
+- Previous release script used overly broad regex that replaced all `return {".*"};` patterns with version number
+- This affected status text sensors that should display actual system states
+- Fixed release script to target only the firmware version sensor specifically
+
+### Technical Details
+- Release script now uses targeted sed command with context matching
+- Only the "Firmware Version" sensor should display the version number
+- All other text sensors display their intended status values
+- No functional changes to HVAC logic or safety features
