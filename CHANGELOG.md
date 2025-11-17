@@ -96,3 +96,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Home Assistant interface now shows safe control options only
 
 This update addresses the safety concern of multiple blower speeds being controllable simultaneously while maintaining all existing functionality and adding convenient manual override capabilities.
+
+## [1.1.1] - 2025-11-17
+
+### Fixed
+- **Compilation Error**: Fixed variable scope issue where `cool_off_hold` was declared inside a conditional block but referenced outside its scope
+- **Code Structure**: Moved `cool_off_hold` variable declaration to proper scope for use in EAC logic
+
+### Technical Details
+- Variable `cool_off_hold` now declared at the beginning of the lambda function for proper scope access
+- No functional changes to HVAC logic, only scope correction for compilation
+- All existing features and safety improvements from v1.1.0 remain intact
