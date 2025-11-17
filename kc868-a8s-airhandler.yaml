@@ -3,7 +3,7 @@ esphome:
   friendly_name: "KC868-A8S Air Handler"
   project:
     name: "jrtaylor71.kc868-air-handler"
-    version: "1.1.0"
+    version: "1.1.1"
 
 esp32:
   board: esp32dev
@@ -567,6 +567,7 @@ script:
           id(humidifier_relay).turn_off();
 
           int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
+          bool cool_off_hold = false;  // Declare here for wider scope
 
           // Check for manual blower override first
           if (id(manual_blower_override).state) {
@@ -586,7 +587,6 @@ script:
             // Normal HVAC operation
             
             // Determine if we are in cooling off-delay "hold"
-            bool cool_off_hold = false;
             if (cool_hold &&
                 !call_w_effective && !call_y1 && !call_y2 && !call_g) {
               cool_off_hold = true;
@@ -810,7 +810,7 @@ text_sensor:
     name: "Firmware Version"
     id: firmware_version
     lambda: |-
-      return {"1.1.0"};
+      return {"1.1.1"};
 
   - platform: template
     name: "Air Handler Mode"
@@ -818,41 +818,41 @@ text_sensor:
     lambda: |-
       if (id(tstat_w).state || id(extend_heat)) {
         if (id(use_flow_switch_fs).state && !id(flow_switch_fs).state) {
-          return {"1.1.0"};
+          return {"1.1.1"};
         } else {
-          return {"1.1.0"};
+          return {"1.1.1"};
         }
       } else if (id(tstat_y2).state &&
                  (id(ac_configuration).state == "Two-Stage A/C")) {
-        return {"1.1.0"};
+        return {"1.1.1"};
       } else if (id(tstat_y1).state) {
-        return {"1.1.0"};
+        return {"1.1.1"};
       } else if (id(extend_cool)) {
-        return {"1.1.0"};
+        return {"1.1.1"};
       } else if (id(tstat_g).state) {
-        return {"1.1.0"};
+        return {"1.1.1"};
       } else {
-        return {"1.1.0"};
+        return {"1.1.1"};
       }
 
   - platform: template
     name: "Blower Speed Selected"
     id: blower_speed_label
     lambda: |-
-      if (id(blower_low).state)        return {"1.1.0"};
-      if (id(blower_medlow).state)     return {"1.1.0"};
-      if (id(blower_medhigh).state)    return {"1.1.0"};
-      if (id(blower_high).state)       return {"1.1.0"};
-      return {"1.1.0"};
+      if (id(blower_low).state)        return {"1.1.1"};
+      if (id(blower_medlow).state)     return {"1.1.1"};
+      if (id(blower_medhigh).state)    return {"1.1.1"};
+      if (id(blower_high).state)       return {"1.1.1"};
+      return {"1.1.1"};
 
   - platform: template
     name: "Blower Control Mode"
     id: blower_control_mode
     lambda: |-
       if (id(manual_blower_override).state) {
-        return {"1.1.0"};
+        return {"1.1.1"};
       } else {
-        return {"1.1.0"};
+        return {"1.1.1"};
       }
 
 sensor:
