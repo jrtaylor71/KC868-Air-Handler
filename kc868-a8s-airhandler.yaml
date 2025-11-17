@@ -3,7 +3,7 @@ esphome:
   friendly_name: "KC868-A8S Air Handler"
   project:
     name: "jrtaylor71.kc868-air-handler"
-    version: "1.0.0"
+    version: "1.1.0"
 
 esp32:
   board: esp32dev
@@ -237,6 +237,31 @@ binary_sensor:
       mode: INPUT
       inverted: true
 
+  # Blower speed status sensors (read-only)
+  - platform: template
+    name: "Blower Low Status"
+    id: blower_low_status
+    lambda: |-
+      return id(blower_low).state;
+
+  - platform: template
+    name: "Blower Med-Low Status"
+    id: blower_medlow_status
+    lambda: |-
+      return id(blower_medlow).state;
+
+  - platform: template
+    name: "Blower Med-High Status"
+    id: blower_medhigh_status
+    lambda: |-
+      return id(blower_medhigh).state;
+
+  - platform: template
+    name: "Blower High Status"
+    id: blower_high_status
+    lambda: |-
+      return id(blower_high).state;
+
 # ============================================================
 #  SWITCHES: TEMPLATE OPTIONS + RELAY OUTPUTS
 # ============================================================
@@ -258,11 +283,22 @@ switch:
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
 
-  # --- Physical relays on KC868-A8S ---
+  # Manual blower speed override (safe single selection)
+  - platform: template
+    name: "Manual Blower Override"
+    id: manual_blower_override
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    turn_on_action:
+      - script.execute: update_hvac
+    turn_off_action:
+      - script.execute: update_hvac
 
-  # Blower speeds
+  # --- Physical relays on KC868-A8S (Internal Use Only) ---
+
+  # Blower speeds - Internal switches, not exposed to HA for individual control
   - platform: gpio
-    name: "Blower Speed Low"
+    name: "Blower Speed Low (Status)"
     id: blower_low
     pin:
       pcf8574: pcf_out
@@ -270,9 +306,10 @@ switch:
       mode: OUTPUT
       inverted: true
     restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
 
   - platform: gpio
-    name: "Blower Speed Med-Low"
+    name: "Blower Speed Med-Low (Status)"
     id: blower_medlow
     pin:
       pcf8574: pcf_out
@@ -280,9 +317,10 @@ switch:
       mode: OUTPUT
       inverted: true
     restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
 
   - platform: gpio
-    name: "Blower Speed Med-High"
+    name: "Blower Speed Med-High (Status)"
     id: blower_medhigh
     pin:
       pcf8574: pcf_out
@@ -290,9 +328,10 @@ switch:
       mode: OUTPUT
       inverted: true
     restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
 
   - platform: gpio
-    name: "Blower Speed High"
+    name: "Blower Speed High (Status)"
     id: blower_high
     pin:
       pcf8574: pcf_out
@@ -300,6 +339,7 @@ switch:
       mode: OUTPUT
       inverted: true
     restore_mode: ALWAYS_OFF
+    internal: true  # Hide from Home Assistant
 
   # Hydronic pump
   - platform: gpio
@@ -359,6 +399,26 @@ select:
       - "Single-Stage A/C"
       - "Two-Stage A/C"
     initial_option: "Two-Stage A/C"
+
+  # Manual blower speed control (when override is enabled)
+  - platform: template
+    name: "Manual Blower Speed"
+    id: manual_blower_speed
+    optimistic: true
+    options:
+      - "Off"
+      - "Low"
+      - "Med-Low"
+      - "Med-High"
+      - "High"
+    initial_option: "Off"
+    on_value:
+      then:
+        - if:
+            condition:
+              switch.is_on: manual_blower_override
+            then:
+              - script.execute: update_hvac
 
 number:
   # Heating OFF delay in seconds
@@ -508,15 +568,32 @@ script:
 
           int speed = 0;  // 1=Low, 2=Med-Low, 3=Med-High, 4=High
 
-          // Determine if we are in cooling off-delay "hold"
-          bool cool_off_hold = false;
-          if (cool_hold &&
-              !call_w_effective && !call_y1 && !call_y2 && !call_g) {
-            cool_off_hold = true;
-          }
+          // Check for manual blower override first
+          if (id(manual_blower_override).state) {
+            std::string manual_speed = id(manual_blower_speed).state;
+            if (manual_speed == "Low") speed = 1;
+            else if (manual_speed == "Med-Low") speed = 2;
+            else if (manual_speed == "Med-High") speed = 3;
+            else if (manual_speed == "High") speed = 4;
+            else speed = 0;  // "Off"
+            
+            // Override mode: ignore HVAC logic, just set blower speed
+            // Pump and accessories still off unless there's a heat call
+            if (call_w_effective && fs_ok) {
+              id(hydronic_pump).turn_on();
+            }
+          } else {
+            // Normal HVAC operation
+            
+            // Determine if we are in cooling off-delay "hold"
+            bool cool_off_hold = false;
+            if (cool_hold &&
+                !call_w_effective && !call_y1 && !call_y2 && !call_g) {
+              cool_off_hold = true;
+            }
 
-          // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
-          if (heat_allowed) {
+            // Priority: Heat > Cool stage 2 > Cool stage 1 > Cool-off-hold > Fan-only
+            if (heat_allowed) {
             // Pump always runs during heat call (incl. off-delay)
             id(hydronic_pump).turn_on();
 
@@ -537,18 +614,19 @@ script:
             // Cooling off-delay: fan-only at stage-1 speed
             speed = (int) id(cool_stage1_speed).state;
 
-          } else if (call_g) {
-            // Fan-only: use cool stage 1 speed
-            speed = (int) id(cool_stage1_speed).state;
-          }
+            } else if (call_g) {
+              // Fan-only: use cool stage 1 speed
+              speed = (int) id(cool_stage1_speed).state;
+            }
 
-          // If we have a heat call but FS is enabled and NOT OK,
-          // run the pump to try to establish flow, but DO NOT run the blower.
-          if (call_w_effective && fs_used && !fs_ok) {
-            id(hydronic_pump).turn_on();
-            // If fan was allowed, override speed to 0 until FS_OK
-            speed = 0;
-          }
+            // If we have a heat call but FS is enabled and NOT OK,
+            // run the pump to try to establish flow, but DO NOT run the blower.
+            if (call_w_effective && fs_used && !fs_ok) {
+              id(hydronic_pump).turn_on();
+              // If fan was allowed, override speed to 0 until FS_OK
+              speed = 0;
+            }
+          }  // End of normal HVAC operation
 
           // Apply chosen blower speed
           switch (speed) {
@@ -575,29 +653,33 @@ script:
             id(blower_medhigh).state ||
             id(blower_high).state;
 
-          // EAC behavior: basically "blower on" logic with per-mode enables
-          bool eac_should_run = false;
-          if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
-            eac_should_run = true;
-          }
-          if ((call_y1 || call_y2 || cool_off_hold) &&
-              ((int)id(enable_eac_on_cool).state == 1)) {
-            eac_should_run = true;
-          }
-          if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
-              ((int)id(enable_eac_on_fan).state == 1)) {
-            eac_should_run = true;
-          }
+          // EAC and Humidifier behavior
+          if (!id(manual_blower_override).state) {
+            // Normal HVAC mode: EAC behavior based on mode enables
+            bool eac_should_run = false;
+            if (heat_allowed && ((int)id(enable_eac_on_heat).state == 1)) {
+              eac_should_run = true;
+            }
+            if ((call_y1 || call_y2 || cool_off_hold) &&
+                ((int)id(enable_eac_on_cool).state == 1)) {
+              eac_should_run = true;
+            }
+            if (call_g && !heat_allowed && !call_y1 && !call_y2 && !cool_off_hold &&
+                ((int)id(enable_eac_on_fan).state == 1)) {
+              eac_should_run = true;
+            }
 
-          if (blower_on && eac_should_run) {
-            id(eac_relay).turn_on();
-          }
+            if (blower_on && eac_should_run) {
+              id(eac_relay).turn_on();
+            }
 
-          // Humidifier behavior: heat-only, blower must be on
-          if (blower_on && heat_allowed &&
-              ((int)id(enable_humid_on_heat).state == 1)) {
-            id(humidifier_relay).turn_on();
+            // Humidifier behavior: heat-only, blower must be on
+            if (blower_on && heat_allowed &&
+                ((int)id(enable_humid_on_heat).state == 1)) {
+              id(humidifier_relay).turn_on();
+            }
           }
+          // Note: In manual override mode, accessories remain off unless there's a heat call
 
           // If no effective heat call anymore, clear heat_fan_allowed so next cycle warms again
           if (!call_w_effective && !call_w_raw) {
@@ -728,7 +810,7 @@ text_sensor:
     name: "Firmware Version"
     id: firmware_version
     lambda: |-
-      return {"1.0.0"};
+      return {"1.1.0"};
 
   - platform: template
     name: "Air Handler Mode"
@@ -736,32 +818,42 @@ text_sensor:
     lambda: |-
       if (id(tstat_w).state || id(extend_heat)) {
         if (id(use_flow_switch_fs).state && !id(flow_switch_fs).state) {
-          return {"HEAT_WAIT_FS"};
+          return {"1.1.0"};
         } else {
-          return {"HEAT"};
+          return {"1.1.0"};
         }
       } else if (id(tstat_y2).state &&
                  (id(ac_configuration).state == "Two-Stage A/C")) {
-        return {"COOL_STAGE_2"};
+        return {"1.1.0"};
       } else if (id(tstat_y1).state) {
-        return {"COOL_STAGE_1"};
+        return {"1.1.0"};
       } else if (id(extend_cool)) {
-        return {"COOL_OFF_DELAY"};
+        return {"1.1.0"};
       } else if (id(tstat_g).state) {
-        return {"FAN_ONLY"};
+        return {"1.1.0"};
       } else {
-        return {"IDLE"};
+        return {"1.1.0"};
       }
 
   - platform: template
     name: "Blower Speed Selected"
     id: blower_speed_label
     lambda: |-
-      if (id(blower_low).state)        return {"LOW"};
-      if (id(blower_medlow).state)     return {"MED_LOW"};
-      if (id(blower_medhigh).state)    return {"MED_HIGH"};
-      if (id(blower_high).state)       return {"HIGH"};
-      return {"OFF"};
+      if (id(blower_low).state)        return {"1.1.0"};
+      if (id(blower_medlow).state)     return {"1.1.0"};
+      if (id(blower_medhigh).state)    return {"1.1.0"};
+      if (id(blower_high).state)       return {"1.1.0"};
+      return {"1.1.0"};
+
+  - platform: template
+    name: "Blower Control Mode"
+    id: blower_control_mode
+    lambda: |-
+      if (id(manual_blower_override).state) {
+        return {"1.1.0"};
+      } else {
+        return {"1.1.0"};
+      }
 
 sensor:
   # Heat coil temperature sensor (DS18B20 #1)
