@@ -1,6 +1,9 @@
 esphome:
   name: kc868-a8s-airhandler
-  friendly_name: "KC868-A8S-Air-Handler"
+  friendly_name: "KC868-A8S Air Handler"
+  project:
+    name: "jrtaylor71.kc868-air-handler"
+    version: "1.0.0"
 
 esp32:
   board: esp32dev
@@ -717,6 +720,16 @@ script:
 # ============================================================
 
 text_sensor:
+  - platform: version
+    name: "ESPHome Version"
+    id: esphome_version
+
+  - platform: template
+    name: "Firmware Version"
+    id: firmware_version
+    lambda: |-
+      return {"1.0.0"};
+
   - platform: template
     name: "Air Handler Mode"
     id: air_handler_mode
